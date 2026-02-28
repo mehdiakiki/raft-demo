@@ -1,0 +1,5 @@
+{
+  "name": "Raft Consensus Visualizer",
+  "description": "Interactive visualization of the Raft consensus algorithm.",
+  "requestFramePermissions": []
+}
