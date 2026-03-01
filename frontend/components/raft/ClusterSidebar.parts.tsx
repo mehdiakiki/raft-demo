@@ -57,6 +57,10 @@ export interface ClusterNodeListProps {
   nodes: Record<string, RaftNode>;
 }
 
+export interface TimeoutDebugPanelProps {
+  nodes: Record<string, RaftNode>;
+}
+
 export const SIDEBAR_ROOT_CLASS =
   'w-full lg:w-[420px] bg-[#0A0A0B] border-l border-white/10 p-6 flex flex-col h-screen overflow-hidden relative z-20';
 export const CLUSTER_STATE_TITLE_CLASS =
@@ -68,6 +72,19 @@ const CLIENT_TITLE_CLASS = 'text-sm font-mono text-slate-400 uppercase tracking-
 const CLIENT_LEGEND_CLASS = 'flex items-center gap-2 text-[10px] font-mono text-slate-400';
 const CLIENT_STATUS_ROW_CLASS = 'mb-3 flex flex-wrap items-center gap-2';
 const CLIENT_FEEDBACK_CLASS = 'mt-2';
+const TIMEOUT_DEBUG_SECTION_CLASS = 'mb-6';
+const TIMEOUT_DEBUG_TITLE_CLASS = 'text-[10px] font-mono text-slate-400 uppercase tracking-widest mb-2';
+const TIMEOUT_DEBUG_SUMMARY_CLASS = cn(
+  RAFT_SURFACE({ tone: 'inset', padding: 'compact', radius: 'md' }),
+  'mb-2 flex items-center justify-between text-[10px] font-mono text-slate-300',
+);
+const TIMEOUT_DEBUG_TABLE_WRAPPER_CLASS = cn(
+  RAFT_SURFACE({ tone: 'inset', padding: 'compact', radius: 'md' }),
+  'overflow-x-auto',
+);
+const TIMEOUT_DEBUG_TABLE_CLASS = 'min-w-full text-[10px] font-mono text-slate-300';
+const TIMEOUT_DEBUG_HEADER_CELL_CLASS = 'pb-1 pr-3 text-slate-500 text-left whitespace-nowrap';
+const TIMEOUT_DEBUG_VALUE_CELL_CLASS = 'py-1 pr-3 whitespace-nowrap';
 const COMMAND_LABEL_CLASS = 'sr-only';
 const COMMAND_INPUT_ID = 'raft-client-command-input';
 const COMMAND_STATUS_ID = 'raft-client-command-status';
@@ -250,6 +267,11 @@ function heartbeatValue(node: RaftNode): string {
 function electionValue(node: RaftNode): string {
   if (node.actualState === 'DEAD' || node.actualState === 'LEADER') return '--';
   return `${Math.max(0, Math.round(node.electionTimeout - node.electionTimer))}ms`;
+}
+
+function formatMs(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return '--';
+  return `${Math.round(value)}ms`;
 }
 
 function toLogEntries(node: RaftNode): NodeLogEntryView[] {
@@ -482,6 +504,95 @@ export function SidebarClientPanel({
         >
           {feedbackMessage}
         </p>
+      </div>
+    </div>
+  );
+}
+
+export function TimeoutDebugPanel({ nodes }: TimeoutDebugPanelProps) {
+  const now = Date.now();
+  const rows = NODE_IDS.map((id) => {
+    const node = nodes[id];
+    if (!node) {
+      return {
+        id,
+        visualRole: '--',
+        actualRole: '--',
+        backendHeartbeat: '--',
+        backendElection: '--',
+        elapsed: '--',
+        remaining: '--',
+        progress: '--',
+        holdLeft: '--',
+      };
+    }
+
+    const isTimerRole = node.actualState === 'FOLLOWER' || node.actualState === 'CANDIDATE';
+    const elapsedMs = isTimerRole ? Math.max(0, now - node.electionStartedAt) : 0;
+    const remainingMs = isTimerRole ? Math.max(0, node.electionTimeout - node.electionTimer) : 0;
+    const holdLeftMs = Math.max(0, node.candidateHoldUntil - now);
+    const progressPct = isTimerRole && node.electionTimeout > 0
+      ? `${Math.round((node.electionTimer / node.electionTimeout) * 100)}%`
+      : '--';
+
+    return {
+      id,
+      visualRole: node.state,
+      actualRole: node.actualState,
+      backendHeartbeat: formatMs(node.backendHeartbeatIntervalMs),
+      backendElection: formatMs(node.backendElectionTimeoutMs),
+      elapsed: isTimerRole ? formatMs(elapsedMs) : '--',
+      remaining: isTimerRole ? formatMs(remainingMs) : '--',
+      progress: progressPct,
+      holdLeft: holdLeftMs > 0 ? formatMs(holdLeftMs) : '--',
+    };
+  });
+
+  const backendTimeouts = Object.values(nodes)
+    .map((node) => node.backendElectionTimeoutMs)
+    .filter((value) => Number.isFinite(value) && value > 0);
+  const spreadMs = backendTimeouts.length > 1
+    ? Math.max(...backendTimeouts) - Math.min(...backendTimeouts)
+    : 0;
+
+  return (
+    <div className={TIMEOUT_DEBUG_SECTION_CLASS}>
+      <div className={TIMEOUT_DEBUG_TITLE_CLASS}>Timeout Debug</div>
+      <div className={TIMEOUT_DEBUG_SUMMARY_CLASS}>
+        <span>Backend election spread</span>
+        <span>{formatMs(spreadMs)}</span>
+      </div>
+      <div className={TIMEOUT_DEBUG_TABLE_WRAPPER_CLASS}>
+        <table className={TIMEOUT_DEBUG_TABLE_CLASS}>
+          <thead>
+            <tr>
+              <th className={TIMEOUT_DEBUG_HEADER_CELL_CLASS}>Node</th>
+              <th className={TIMEOUT_DEBUG_HEADER_CELL_CLASS}>Visual</th>
+              <th className={TIMEOUT_DEBUG_HEADER_CELL_CLASS}>Actual</th>
+              <th className={TIMEOUT_DEBUG_HEADER_CELL_CLASS}>HB</th>
+              <th className={TIMEOUT_DEBUG_HEADER_CELL_CLASS}>Election</th>
+              <th className={TIMEOUT_DEBUG_HEADER_CELL_CLASS}>Elapsed</th>
+              <th className={TIMEOUT_DEBUG_HEADER_CELL_CLASS}>Left</th>
+              <th className={TIMEOUT_DEBUG_HEADER_CELL_CLASS}>Progress</th>
+              <th className={TIMEOUT_DEBUG_HEADER_CELL_CLASS}>Hold Left</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr key={row.id}>
+                <td className={TIMEOUT_DEBUG_VALUE_CELL_CLASS}>N-{row.id}</td>
+                <td className={TIMEOUT_DEBUG_VALUE_CELL_CLASS}>{row.visualRole}</td>
+                <td className={TIMEOUT_DEBUG_VALUE_CELL_CLASS}>{row.actualRole}</td>
+                <td className={TIMEOUT_DEBUG_VALUE_CELL_CLASS}>{row.backendHeartbeat}</td>
+                <td className={TIMEOUT_DEBUG_VALUE_CELL_CLASS}>{row.backendElection}</td>
+                <td className={TIMEOUT_DEBUG_VALUE_CELL_CLASS}>{row.elapsed}</td>
+                <td className={TIMEOUT_DEBUG_VALUE_CELL_CLASS}>{row.remaining}</td>
+                <td className={TIMEOUT_DEBUG_VALUE_CELL_CLASS}>{row.progress}</td>
+                <td className={TIMEOUT_DEBUG_VALUE_CELL_CLASS}>{row.holdLeft}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </div>
   );

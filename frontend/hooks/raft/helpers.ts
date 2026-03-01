@@ -4,9 +4,10 @@ import {
   CANDIDATE_MIN_VISIBLE_MS,
   DEFAULT_ELECTION_TIMEOUT_JITTER_MS,
   DEFAULT_ELECTION_TIMEOUT_MIN_MS,
-  ELECTION_TIMEOUT_TO_HEARTBEAT_RATIO,
   HB_INTERVAL_MS,
-  MIN_SCALED_HEARTBEAT_MS,
+  MESSAGE_SPEED_MAX,
+  MESSAGE_SPEED_MIN,
+  MESSAGE_SPEED_TO_LATENCY_SCALE,
   MIN_STALE_WINDOW_MS,
   MIN_TRANSPORT_SILENCE_MS,
   RECONNECT_BASE_MS,
@@ -19,10 +20,11 @@ import {
 
 // electionTimeouts caches a stable per-node fallback timeout.
 const electionTimeouts: Record<string, number> = {};
+const FOLLOWER_ROLLOVER_HINT_THRESHOLD = 0.85;
 
 function getElectionTimeout(nodeID: string): number {
   if (!electionTimeouts[nodeID]) {
-    // 3000–6000ms fallback when backend timing metadata is absent.
+    // 8000–10000ms fallback when backend timing metadata is absent.
     electionTimeouts[nodeID] = DEFAULT_ELECTION_TIMEOUT_MIN_MS + Math.random() * DEFAULT_ELECTION_TIMEOUT_JITTER_MS;
   }
   return electionTimeouts[nodeID];
@@ -54,6 +56,23 @@ export function transportSilenceWindowMs(nodes: Record<string, RaftNode>): numbe
   return Math.max(MIN_TRANSPORT_SILENCE_MS, Math.floor(minWindow * TRANSPORT_SILENCE_FACTOR));
 }
 
+export function clampMessageSpeed(speed: number): number {
+  if (!Number.isFinite(speed)) return MESSAGE_SPEED_MIN;
+  return Math.min(MESSAGE_SPEED_MAX, Math.max(MESSAGE_SPEED_MIN, speed));
+}
+
+export function messageSpeedToLatencyMs(speed: number): number {
+  const clamped = clampMessageSpeed(speed);
+  return Math.max(0, Math.round(clamped * MESSAGE_SPEED_TO_LATENCY_SCALE));
+}
+
+export function latencyMsToMessageSpeed(latencyMs: number): number {
+  if (!Number.isFinite(latencyMs) || latencyMs <= 0) {
+    return MESSAGE_SPEED_MIN;
+  }
+  return clampMessageSpeed(latencyMs / MESSAGE_SPEED_TO_LATENCY_SCALE);
+}
+
 export function isNodeStateReply(value: unknown): value is NodeStateReply {
   if (!value || typeof value !== 'object') return false;
   const candidate = value as Partial<NodeStateReply>;
@@ -80,20 +99,39 @@ export function mapReplyToNode(
   const rawHeartbeatMs = reply.heartbeat_interval_ms ?? 0;
   const rawElectionMs = reply.election_timeout_ms ?? 0;
   const scaledHeartbeat = rawHeartbeatMs > 0
-    ? Math.max(MIN_SCALED_HEARTBEAT_MS, rawHeartbeatMs * VISUAL_TIME_SCALE)
+    ? rawHeartbeatMs * VISUAL_TIME_SCALE
     : (prev?.heartbeatInterval ?? HB_INTERVAL_MS);
   const fallbackElection = prev?.electionTimeout ?? getElectionTimeout(reply.node_id);
   const scaledElection = rawElectionMs > 0
-    ? Math.max(scaledHeartbeat * ELECTION_TIMEOUT_TO_HEARTBEAT_RATIO, rawElectionMs * VISUAL_TIME_SCALE)
+    ? rawElectionMs * VISUAL_TIME_SCALE
     : fallbackElection;
+  const stableElection = scaledElection;
 
-  // Keep election timeout stable while role stays the same to avoid denominator
-  // jitter in the ring animation on frequent state pushes.
-  const stableElection = prev &&
-    prev.state === reply.state &&
-    (reply.state === 'FOLLOWER' || reply.state === 'CANDIDATE')
-    ? prev.electionTimeout
-    : scaledElection;
+  const timerRole = reply.state === 'FOLLOWER' || reply.state === 'CANDIDATE';
+  const backendTimeoutChanged = Boolean(prev) &&
+    timerRole &&
+    rawElectionMs > 0 &&
+    (prev?.backendElectionTimeoutMs ?? 0) > 0 &&
+    rawElectionMs !== (prev?.backendElectionTimeoutMs ?? 0);
+  const enteredTimerRole = Boolean(prev) &&
+    timerRole &&
+    (prev?.actualState === 'LEADER' || prev?.actualState === 'DEAD');
+  const shouldResetTimer = backendTimeoutChanged || enteredTimerRole;
+  const prevProgress = prev && prev.electionTimeout > 0
+    ? prev.electionTimer / prev.electionTimeout
+    : 0;
+  const prevClockProgress = prev && prev.electionTimeout > 0
+    ? Math.min(
+      1,
+      Math.max(0, now - prev.electionStartedAt) / prev.electionTimeout,
+    )
+    : 0;
+  const nearFollowerTimeout = Math.max(prevProgress, prevClockProgress) >= FOLLOWER_ROLLOVER_HINT_THRESHOLD;
+  const followerTimeoutRolledOver = Boolean(prev) &&
+    backendTimeoutChanged &&
+    prev?.actualState === 'FOLLOWER' &&
+    reply.state === 'FOLLOWER' &&
+    nearFollowerTimeout;
 
   let candidateHoldUntil = Math.max(prev?.candidateHoldUntil ?? 0, candidateHintUntil);
   // Only apply the minimum candidate visibility hold after we already have
@@ -104,6 +142,11 @@ export function mapReplyToNode(
   }
   if (reply.state === 'DEAD') {
     candidateHoldUntil = 0;
+  } else if (followerTimeoutRolledOver) {
+    // Pre-vote timeouts can reset FOLLOWER->FOLLOWER without an observable
+    // backend CANDIDATE frame. Keep a short visual candidate hint so timeout
+    // rollover aligns with operator expectations.
+    candidateHoldUntil = Math.max(candidateHoldUntil, now + CANDIDATE_MIN_VISIBLE_MS);
   } else if (candidateHoldUntil <= now && reply.state !== 'CANDIDATE') {
     candidateHoldUntil = 0;
   }
@@ -113,10 +156,10 @@ export function mapReplyToNode(
     visualState = 'CANDIDATE';
   }
 
-  // Preserve timer continuity across role transitions.
-  // The periodic election tick computes progress from lastHeartbeat.
-  const electionTimer = prev?.electionTimer ?? 0;
-  const lastHeartbeat = prev?.lastHeartbeat ?? now;
+  // electionTimer is derived locally from lastHeartbeat/electionStartedAt.
+  const electionTimer = shouldResetTimer ? 0 : (prev?.electionTimer ?? 0);
+  const lastHeartbeat = shouldResetTimer ? now : (prev?.lastHeartbeat ?? now);
+  const electionStartedAt = shouldResetTimer ? now : (prev?.electionStartedAt ?? lastHeartbeat);
 
   return {
     id: reply.node_id,
@@ -131,9 +174,13 @@ export function mapReplyToNode(
     nextIndex: reply.next_index ?? {},
     matchIndex: reply.match_index ?? {},
     heartbeatInterval: scaledHeartbeat,
-    // Preserve election timer state across WS pushes — heartbeat pulses reset it.
+    backendHeartbeatIntervalMs: rawHeartbeatMs,
+    // Preserve election timer state across WS pushes; only backend timeout-cycle
+    // changes should reset election progress.
     electionTimer,
     electionTimeout: stableElection,
+    backendElectionTimeoutMs: rawElectionMs,
+    electionStartedAt,
     votesReceived: prev?.votesReceived ?? new Set<string>(),
     lastUpdate: now,
     lastHeartbeat,

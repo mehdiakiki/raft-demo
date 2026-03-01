@@ -6,6 +6,7 @@ import {
   ClusterNodeList,
   SIDEBAR_ROOT_CLASS,
   SidebarClientPanel,
+  TimeoutDebugPanel,
 } from './ClusterSidebar.parts';
 
 interface ClusterSidebarProps {
@@ -38,6 +39,7 @@ export function ClusterSidebar({
         onSubmit={onSubmit}
         setCommandInput={setCommandInput}
       />
+      <TimeoutDebugPanel nodes={nodes} />
 
       <div className={CLUSTER_STATE_TITLE_CLASS}>Cluster State</div>
       <ClusterNodeList nodes={nodes} />

@@ -22,12 +22,25 @@ import { renderHook, act } from '@testing-library/react';
 
 vi.mock('@/lib/api', () => ({
     fetchClusterState: vi.fn().mockResolvedValue({ nodes: [] }),
+    fetchNetEmControl: vi.fn().mockResolvedValue({ latency_ms: 40, jitter_ms: 14, drop_pct: 0 }),
+    fetchChaosControl: vi.fn().mockResolvedValue({ enabled: false, interval_ms: 20000, down_ms: 12000 }),
+    setNetEmControl: vi.fn().mockResolvedValue({ latency_ms: 40, jitter_ms: 14, drop_pct: 0 }),
+    setChaosControl: vi.fn().mockResolvedValue({ enabled: false, interval_ms: 20000, down_ms: 12000 }),
     submitCommand: vi.fn().mockResolvedValue({ success: true, leader_id: 'A', duplicate: false }),
     killNode: vi.fn().mockResolvedValue({ node_id: 'B', alive: false }),
     restartNode: vi.fn().mockResolvedValue({ node_id: 'B', alive: true }),
 }));
 
-import { fetchClusterState, submitCommand, killNode, restartNode } from '@/lib/api';
+import {
+    fetchChaosControl,
+    fetchClusterState,
+    fetchNetEmControl,
+    killNode,
+    restartNode,
+    setChaosControl,
+    setNetEmControl,
+    submitCommand,
+} from '@/lib/api';
 import { useRaft } from '@/hooks/useRaft';
 import type { NodeStateReply, StateTransitionEvent } from '@/lib/types';
 
@@ -248,9 +261,11 @@ describe('state mapping', () => {
                 election_timeout_ms: 200,
             }));
         });
-        // Visualization uses a 20x scale.
-        expect(result.current.nodes['A'].heartbeatInterval).toBe(1000);
-        expect(result.current.nodes['A'].electionTimeout).toBe(4000);
+        // Frontend uses backend timing values 1:1.
+        expect(result.current.nodes['A'].heartbeatInterval).toBe(50);
+        expect(result.current.nodes['A'].electionTimeout).toBe(200);
+        expect(result.current.nodes['A'].backendHeartbeatIntervalMs).toBe(50);
+        expect(result.current.nodes['A'].backendElectionTimeoutMs).toBe(200);
     });
 
     it('marks one node stale while other nodes keep receiving updates', () => {
@@ -322,7 +337,7 @@ describe('state mapping', () => {
         expect(result.current.nodes['A'].state).toBe('CANDIDATE');
         expect(result.current.nodes['A'].actualState).toBe('LEADER');
 
-        act(() => { vi.advanceTimersByTime(1_300); });
+        act(() => { vi.advanceTimersByTime(2_100); });
 
         expect(result.current.nodes['A'].state).toBe('LEADER');
         expect(result.current.nodes['A'].actualState).toBe('LEADER');
@@ -456,6 +471,72 @@ describe('state mapping', () => {
         expect(after).toBeGreaterThanOrEqual(before);
     });
 
+    it('does not locally reset follower timeout during backend silence while leader snapshot stays LEADER', () => {
+        const { result } = renderHook(() => useRaft());
+        act(() => { FakeWebSocket.instances[0].simulateOpen(); });
+        act(() => {
+            FakeWebSocket.instances[0].simulateMessage(makeReply({
+                node_id: 'A',
+                state: 'LEADER',
+                current_term: 1,
+                heartbeat_interval_ms: 100,
+                election_timeout_ms: 400,
+            }));
+            FakeWebSocket.instances[0].simulateMessage(makeReply({
+                node_id: 'B',
+                state: 'FOLLOWER',
+                current_term: 1,
+                heartbeat_interval_ms: 100,
+                election_timeout_ms: 350,
+            }));
+        });
+
+        const startedAt = result.current.nodes['B'].electionStartedAt;
+        act(() => { vi.advanceTimersByTime(1_200); });
+
+        const follower = result.current.nodes['B'];
+        expect(follower.electionStartedAt).toBe(startedAt);
+        expect(follower.electionTimer).toBeGreaterThanOrEqual(320);
+        expect(follower.electionTimer).toBeLessThanOrEqual(follower.electionTimeout);
+    });
+
+    it('shows CANDIDATE visual on follower timeout rollover even when frame arrives between timer ticks', () => {
+        const { result } = renderHook(() => useRaft());
+        act(() => { FakeWebSocket.instances[0].simulateOpen(); });
+        act(() => {
+            FakeWebSocket.instances[0].simulateMessage(makeReply({
+                node_id: 'A',
+                state: 'FOLLOWER',
+                current_term: 1,
+                heartbeat_interval_ms: 40,
+                election_timeout_ms: 100,
+            }));
+        });
+
+        // 89ms is near timeout but often before the next 16ms election tick update.
+        act(() => { vi.advanceTimersByTime(89); });
+        const before = result.current.nodes['A'].electionTimer;
+        expect(before).toBeLessThan(92);
+
+        act(() => {
+            FakeWebSocket.instances[0].simulateMessage(makeReply({
+                node_id: 'A',
+                state: 'FOLLOWER',
+                current_term: 1,
+                heartbeat_interval_ms: 40,
+                election_timeout_ms: 130,
+            }));
+        });
+
+        expect(result.current.nodes['A'].actualState).toBe('FOLLOWER');
+        expect(result.current.nodes['A'].state).toBe('CANDIDATE');
+        expect(result.current.nodes['A'].electionTimer).toBe(0);
+
+        act(() => { vi.advanceTimersByTime(2_100); });
+        expect(result.current.nodes['A'].state).toBe('FOLLOWER');
+        expect(result.current.nodes['A'].actualState).toBe('FOLLOWER');
+    });
+
     it('ignores stale transition replay events that are outside the replay window', () => {
         const { result } = renderHook(() => useRaft());
         act(() => { FakeWebSocket.instances[0].simulateOpen(); });
@@ -583,5 +664,53 @@ describe('setIsRunning', () => {
         // No new socket should be created after a manual disconnect.
         act(() => { vi.advanceTimersByTime(10_000); });
         expect(FakeWebSocket.instances).toHaveLength(1);
+    });
+});
+
+// ── 6. control-plane wiring ──────────────────────────────────────────────────
+
+describe('control-plane wiring', () => {
+    it('hydrates gateway control snapshots after socket open', async () => {
+        renderHook(() => useRaft());
+        act(() => { FakeWebSocket.instances[0].simulateOpen(); });
+
+        await act(async () => {
+            await Promise.resolve();
+        });
+
+        expect(fetchNetEmControl as Mock).toHaveBeenCalledTimes(1);
+        expect(fetchChaosControl as Mock).toHaveBeenCalledTimes(1);
+    });
+
+    it('setMessageSpeed debounces netem updates and posts mapped latency values', async () => {
+        const { result } = renderHook(() => useRaft());
+        act(() => { FakeWebSocket.instances[0].simulateOpen(); });
+
+        act(() => { result.current.setMessageSpeed(0.05); });
+        expect(setNetEmControl as Mock).not.toHaveBeenCalled();
+
+        act(() => { vi.advanceTimersByTime(130); });
+
+        expect(setNetEmControl as Mock).toHaveBeenCalledWith({
+            latency_ms: 100,
+            jitter_ms: 35,
+            drop_pct: 0,
+        });
+    });
+
+    it('setChaosMode posts scheduler toggle payload', async () => {
+        const { result } = renderHook(() => useRaft());
+        act(() => { FakeWebSocket.instances[0].simulateOpen(); });
+
+        act(() => { result.current.setChaosMode(true); });
+        await act(async () => {
+            await Promise.resolve();
+        });
+
+        expect(setChaosControl as Mock).toHaveBeenCalledWith({
+            enabled: true,
+            interval_ms: 20000,
+            down_ms: 12000,
+        });
     });
 });
