@@ -22,8 +22,8 @@ import (
 	"syscall"
 	"time"
 
-	pb "github.com/medvih/raft-core/gen/raft"
-	"github.com/medvih/raft-demo/internal/gateway"
+	pb "github.com/mehdiakiki/raft-core/gen/raft"
+	"github.com/mehdiakiki/raft-demo/internal/gateway"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/proto"

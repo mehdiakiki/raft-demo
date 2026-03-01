@@ -23,12 +23,12 @@ It intentionally does **not** own protocol logic. Consensus source of truth is [
 
 Current expected baseline:
 
-- `github.com/medvih/raft-core v0.1.0`
+- `github.com/mehdiakiki/raft-core v0.1.1`
 
 If you are bootstrapping both repos locally before first tag, use one of:
 
 1. `go work use ../raft-core` (preferred)
-2. temporary `replace github.com/medvih/raft-core => ../raft-core` in `go.mod`
+2. temporary `replace github.com/mehdiakiki/raft-core => ../raft-core` in `go.mod`
 
 ## Local development
 

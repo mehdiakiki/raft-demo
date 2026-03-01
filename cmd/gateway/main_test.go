@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	pb "github.com/medvih/raft-core/gen/raft"
+	pb "github.com/mehdiakiki/raft-core/gen/raft"
 	"google.golang.org/grpc"
 )
 

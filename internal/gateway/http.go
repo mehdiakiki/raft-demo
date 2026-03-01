@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 
-	pb "github.com/medvih/raft-core/gen/raft"
+	pb "github.com/mehdiakiki/raft-core/gen/raft"
 )
 
 // NodeClients holds a gRPC client for each Raft node keyed by node ID.

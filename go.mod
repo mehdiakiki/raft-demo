@@ -1,10 +1,10 @@
-module github.com/medvih/raft-demo
+module github.com/mehdiakiki/raft-demo
 
 go 1.25
 
 require (
 	github.com/gorilla/websocket v1.5.3
-	github.com/medvih/raft-core v0.1.0
+	github.com/mehdiakiki/raft-core v0.1.1
 	google.golang.org/grpc v1.79.1
 	google.golang.org/protobuf v1.36.11
 )
