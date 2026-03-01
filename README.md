@@ -2,6 +2,10 @@
 
 Visualization and integration layer for [`raft-core`](https://github.com/mehdiakiki/raft-core).
 
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/3226f666-2a57-458b-91c9-068d8ad64556" alt="Raft Demo Screenshot" width="860" />
+</p>
+
 This repository contains:
 
 - Go gateway (HTTP + WebSocket fanout)
