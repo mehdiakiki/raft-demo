@@ -3,41 +3,76 @@ SHELL := /usr/bin/env bash
 
 .DEFAULT_GOAL := help
 
-.PHONY: help doctor gateway-test frontend-test dev dev-down dev-logs
+.PHONY: help doctor test dev dev-up dev-down dev-logs dev-status dev-restart quick clean rebuild smoke-test watch
 
 DOCKER_COMPOSE := $(shell if command -v docker-compose >/dev/null 2>&1; then echo docker-compose; else echo "docker compose"; fi)
-GO_ENV := GOCACHE=$(CURDIR)/.cache/go-build
 
-## doctor: verify demo toolchain
+## doctor: verify all required tools
 doctor:
-	@for tool in go node npm; do \
+	@for tool in go docker node npm curl; do \
 		if ! command -v $$tool >/dev/null 2>&1; then \
-			echo "error: missing '$$tool'"; exit 1; \
+			echo "❌ Missing: $$tool"; exit 1; \
 		fi; \
-		echo "ok: $$tool -> $$(command -v $$tool)"; \
+		echo "✓ $$tool"; \
 	done
 
-## gateway-test: run gateway backend tests
-gateway-test:
-	mkdir -p .cache/go-build
-	$(GO_ENV) go test -v ./cmd/gateway/... ./internal/gateway/...
+## test: run all unit tests
+test:
+	go test ./cmd/... ./internal/...
+	cd frontend && npm test -- --run
 
-## frontend-test: run frontend tests
-frontend-test:
-	cd frontend && npm test
-
-## dev: start demo stack (expects raft-core node image available)
+## dev: start development environment
 dev:
-	$(DOCKER_COMPOSE) up --build --remove-orphans
+	@./scripts/dev.sh
 
-## dev-down: stop demo stack
+## dev-up: alias for dev
+dev-up: dev
+
+## dev-down: stop development stack
 dev-down:
-	$(DOCKER_COMPOSE) down --remove-orphans
+	@./scripts/dev.sh stop
 
-## dev-logs: tail demo logs
+## dev-logs: follow development logs
 dev-logs:
-	$(DOCKER_COMPOSE) logs -f --tail=200
+	@./scripts/dev.sh logs
 
-## help: list available targets
+## dev-status: show status
+dev-status:
+	@./scripts/dev.sh status
+
+## dev-restart: restart stack
+dev-restart:
+	@./scripts/dev.sh restart
+
+## quick: quick start (builds everything, opens browser)
+quick:
+	@./scripts/quick-start.sh
+
+## smoke-test: verify everything works end-to-end
+smoke-test:
+	@./scripts/smoke-test.sh
+
+## clean: remove all artifacts
+clean:
+	rm -rf .cache frontend/.next frontend/node_modules
+	$(DOCKER_COMPOSE) down -v --remove-orphans 2>/dev/null || true
+	docker rmi raft-demo-gateway raft-demo-frontend raft-core-node:dev 2>/dev/null || true
+
+## rebuild: clean rebuild from scratch
+rebuild: clean dev
+
+## watch: watch for changes and run tests
+watch:
+	@which entr >/dev/null || (echo "Install entr first: apt install entr" && exit 1)
+	find . -name "*.go" -o -name "*.ts" -o -name "*.tsx" | entr -c $(MAKE) test
+
+## help: show this help
 help:
-	@grep -E '^## ' Makefile | sed 's/## //'
+	@echo "Raft Demo - Development Commands"
+	@echo ""
+	@echo "  make dev        Start development (builds + runs everything)"
+	@echo "  make dev-logs   Follow logs"
+	@echo "  make dev-down   Stop"
+	@echo "  make test       Run unit tests"
+	@echo "  make smoke-test Full stack verification"
+	@echo "  make clean      Remove artifacts"

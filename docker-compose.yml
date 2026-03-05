@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   node-a:
-    image: ${RAFT_CORE_NODE_IMAGE:-ghcr.io/medvih/raft-core-node:latest}
+    image: raft-core-node:dev
     command: [
       "--id=A",
       "--addr=:60051",
@@ -14,9 +14,10 @@ services:
       "--log-level=debug"
     ]
     expose: ["60051"]
+    depends_on: [gateway]
 
   node-b:
-    image: ${RAFT_CORE_NODE_IMAGE:-ghcr.io/medvih/raft-core-node:latest}
+    image: raft-core-node:dev
     command: [
       "--id=B",
       "--addr=:60052",
@@ -28,9 +29,10 @@ services:
       "--log-level=debug"
     ]
     expose: ["60052"]
+    depends_on: [gateway]
 
   node-c:
-    image: ${RAFT_CORE_NODE_IMAGE:-ghcr.io/medvih/raft-core-node:latest}
+    image: raft-core-node:dev
     command: [
       "--id=C",
       "--addr=:60053",
@@ -42,9 +44,10 @@ services:
       "--log-level=debug"
     ]
     expose: ["60053"]
+    depends_on: [gateway]
 
   node-d:
-    image: ${RAFT_CORE_NODE_IMAGE:-ghcr.io/medvih/raft-core-node:latest}
+    image: raft-core-node:dev
     command: [
       "--id=D",
       "--addr=:60054",
@@ -56,9 +59,10 @@ services:
       "--log-level=debug"
     ]
     expose: ["60054"]
+    depends_on: [gateway]
 
   node-e:
-    image: ${RAFT_CORE_NODE_IMAGE:-ghcr.io/medvih/raft-core-node:latest}
+    image: raft-core-node:dev
     command: [
       "--id=E",
       "--addr=:60055",
@@ -70,12 +74,18 @@ services:
       "--log-level=debug"
     ]
     expose: ["60055"]
+    depends_on: [gateway]
 
   gateway:
     build:
       context: .
       dockerfile: Dockerfile.gateway
-    command: ["--http-addr=:8080", "--grpc-addr=:50051", "--log-level=debug"]
+    command: [
+      "--http-addr=:8080",
+      "--grpc-addr=:50051",
+      "--nodes=A=node-a:60051,B=node-b:60052,C=node-c:60053,D=node-d:60054,E=node-e:60055",
+      "--log-level=debug"
+    ]
     ports:
       - "8080:8080"
       - "50051:50051"
