@@ -6,7 +6,9 @@ WORKDIR /app
 
 COPY go.mod ./
 COPY go.sum ./
-RUN go mod download
+
+COPY ../raft-core /raft-core
+RUN sed -i 's|replace github.com/mehdiakiki/raft-core => ../raft-core||' go.mod || true
 
 COPY cmd ./cmd
 COPY internal ./internal

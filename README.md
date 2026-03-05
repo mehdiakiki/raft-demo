@@ -8,17 +8,37 @@ Visualization and integration layer for [`raft-core`](https://github.com/mehdiak
 
 This repository contains:
 
-- Go gateway (HTTP + WebSocket fanout)
+- Go gateway (gRPC receiver + WebSocket fanout)
 - Next.js frontend visualizer
 - Demo Docker Compose topology
 
 It intentionally does **not** own protocol logic. Consensus source of truth is [`raft-core`](https://github.com/mehdiakiki/raft-core).
 
+## Architecture
+
+```
+┌──────────────┐    PushState()    ┌──────────────┐
+│  Raft Nodes  │ ─────────────────►│   Gateway    │
+│ (gRPC client)│                    │ (gRPC server│
+│              │                    │ + WebSocket)│
+└──────────────┘                    └──────┬───────┘
+                                           │
+                    WebSocket broadcast    │
+                                           ▼
+                                    ┌─────────────┐
+                                    │   Frontend  │
+                                    │ (state      │
+                                    │  reconstructor)│
+                                    └─────────────┘
+```
+
+**Event-sourcing mode:** Raft nodes push state changes to the gateway via `PushState()` gRPC. The gateway broadcasts events to connected WebSocket clients. The frontend reconstructs cluster state from the event stream.
+
 ## Layout
 
 - `cmd/gateway` — gateway binary entrypoint
-- `internal/gateway` — REST and websocket hub
-- `frontend` — Next.js UI
+- `internal/gateway` — gRPC receiver and WebSocket hub
+- `frontend` — Next.js UI with state reconstructor
 - `docker-compose.yml` — demo topology
 
 ## Dependency contract
@@ -45,7 +65,7 @@ cd frontend && npm install && npm run dev
 ## Make targets
 
 - `make doctor` - verify required local tools (`go`, `node`, `npm`).
-- `make gateway-test` - run Go tests for gateway entrypoints and handlers.
+- `make gateway-test` - run Go tests for gateway.
 - `make frontend-test` - run frontend test suite (`npm test`).
 - `make dev` - start demo stack with Docker Compose (nodes, gateway, frontend).
 - `make dev-down` - stop and remove the demo stack.
@@ -64,6 +84,24 @@ To use a specific node image:
 ```bash
 RAFT_CORE_NODE_IMAGE=ghcr.io/medvih/raft-core-node:<tag> make dev
 ```
+
+## Node configuration
+
+Nodes must be configured with the `--gateway` flag to push state events:
+
+```bash
+node --id=A --addr=:60051 --peers=B=node-b:60052 --gateway=gateway:50051
+```
+
+## Gateway flags
+
+```bash
+gateway --http-addr=:8080 --grpc-addr=:50051 --log-level=debug
+```
+
+- `--http-addr` — HTTP/WebSocket listen address
+- `--grpc-addr` — gRPC listen address (nodes push here)
+- `--log-level` — log verbosity (debug, info, warn, error)
 
 ## Demo timing note
 
