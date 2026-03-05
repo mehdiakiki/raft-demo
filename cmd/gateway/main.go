@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -20,6 +23,7 @@ import (
 func main() {
 	httpAddr := flag.String("http-addr", ":8080", "HTTP/WebSocket listen address")
 	grpcAddr := flag.String("grpc-addr", ":50051", "gRPC listen address (nodes push here)")
+	nodesFlag := flag.String("nodes", "", "node addresses for kill/restart (comma-separated: ID=host:port,...)")
 	logLevel := flag.String("log-level", "info", "log level: debug, info, warn, error")
 	flag.Parse()
 
@@ -34,13 +38,38 @@ func main() {
 
 	hub := gateway.NewHub()
 
+	// Create node clients for kill/restart functionality
+	nodeClients, err := gateway.NewNodeClientMap(*nodesFlag)
+	if err != nil {
+		slog.Error("failed to connect to nodes", "err", err)
+		os.Exit(1)
+	}
+	defer nodeClients.Close()
+
+	receiver := &gateway.StateReceiver{
+		Hub:         hub,
+		NodeClients: nodeClients,
+	}
+
 	grpcSrv := grpc.NewServer()
-	pb.RegisterRaftGatewayServer(grpcSrv, &gateway.StateReceiver{Hub: hub})
+	pb.RegisterRaftGatewayServer(grpcSrv, receiver)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", hub.ServeWS)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("/api/nodes/{id}/kill", receiver.ServeKillNode)
+	mux.HandleFunc("/api/nodes/{id}/restart", func(w http.ResponseWriter, r *http.Request) {
+		// Restart is just setting alive=true
+		r.Body = http.MaxBytesReader(w, r.Body, 1024)
+		var req struct {
+			Alive bool `json:"alive"`
+		}
+		req.Alive = true
+		body, _ := json.Marshal(req)
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		receiver.ServeKillNode(w, r)
 	})
 
 	httpSrv := &http.Server{Addr: *httpAddr, Handler: corsMiddleware(mux)}

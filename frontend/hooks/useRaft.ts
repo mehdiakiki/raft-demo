@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { RaftStateReconstructor } from '@/lib/stateReconstructor';
+import * as api from '@/lib/api';
 import type { RaftStateEvent, UINode, NodeState, ConnectionStatus } from '@/lib/types';
 
 const WS_URL = 'ws://localhost:8080/ws';
@@ -56,27 +57,26 @@ export function useRaft() {
       if (!mountedRef.current) return;
       
       try {
-        const payload = JSON.parse(event.data) as RaftStateEvent;
+        const payload = JSON.parse(event.data);
         
-        if (!payload.node_id) return;
+        // Handle RPC events (heartbeats, votes, etc.)
+        if (payload.type === 'rpc' && payload.from_node && payload.to_node) {
+          setHeartbeats(prev => [...prev, {
+            id: `${payload.from_node}-${payload.to_node}-${payload.event_time_ms}`,
+            from: payload.from_node,
+            to: payload.to_node,
+            progress: 0,
+          }]);
+          return;
+        }
+        
+        // Handle state events
+        const stateEvent = payload as RaftStateEvent;
+        if (!stateEvent.node_id) return;
 
-        reconstructorRef.current.applyEvent(payload);
+        reconstructorRef.current.applyEvent(stateEvent);
         
         setNodes(reconstructorRef.current.getNodes());
-
-        if (payload.state === 'LEADER') {
-          const leaderId = payload.node_id;
-          Object.keys(reconstructorRef.current.getNodes()).forEach(nodeId => {
-            if (nodeId !== leaderId) {
-              setHeartbeats(prev => [...prev, {
-                id: `${leaderId}-${nodeId}-${Date.now()}`,
-                from: leaderId,
-                to: nodeId,
-                progress: 0,
-              }]);
-            }
-          });
-        }
       } catch {
         // Malformed message — ignore
       }
@@ -146,9 +146,20 @@ export function useRaft() {
     return () => clearInterval(interval);
   }, []);
 
-  const toggleNodeState = useCallback((id: string) => {
-    console.log('toggleNodeState not implemented in event-sourcing mode', id);
-  }, []);
+  const toggleNodeState = useCallback(async (id: string) => {
+    const node = nodes[id];
+    if (!node) return;
+    
+    try {
+      if (node.state === 'DEAD') {
+        await api.restartNode(id);
+      } else {
+        await api.killNode(id);
+      }
+    } catch (err) {
+      console.error('toggleNodeState failed', err);
+    }
+  }, [nodes]);
 
   const clientRequest = useCallback(async (command: string) => {
     console.log('clientRequest not implemented in event-sourcing mode', command);

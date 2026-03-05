@@ -23,23 +23,34 @@ export interface ClusterStateResponse {
 }
 
 // NOTE: REST endpoints were removed in the event-sourcing refactor.
-// The following functions are placeholders for future gRPC-web integration.
-// Currently, the demo operates in read-only visualization mode.
+// The following functions are now implemented via gateway proxy to nodes.
 
-export async function submitCommand(
-  _command: string,
-  _clientID: string,
-  _sequenceNum: number,
-): Promise<CommandResult> {
-  throw new Error("submitCommand not available in event-sourcing mode");
+export async function killNode(nodeID: string): Promise<SetAliveResult> {
+  const res = await fetch(`${gatewayBaseURL}/api/nodes/${nodeID}/kill`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ alive: false }),
+  });
+
+  if (!res.ok) {
+    throw new Error(`killNode: HTTP ${res.status}`);
+  }
+
+  return res.json();
 }
 
-export async function killNode(_nodeID: string): Promise<SetAliveResult> {
-  throw new Error("killNode not available in event-sourcing mode");
-}
+export async function restartNode(nodeID: string): Promise<SetAliveResult> {
+  const res = await fetch(`${gatewayBaseURL}/api/nodes/${nodeID}/restart`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ alive: true }),
+  });
 
-export async function restartNode(_nodeID: string): Promise<SetAliveResult> {
-  throw new Error("restartNode not available in event-sourcing mode");
+  if (!res.ok) {
+    throw new Error(`restartNode: HTTP ${res.status}`);
+  }
+
+  return res.json();
 }
 
 export async function fetchClusterState(): Promise<ClusterStateResponse> {
