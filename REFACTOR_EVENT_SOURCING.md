@@ -195,8 +195,41 @@ environment:
 - Real term/vote/leader data flows through
 
 ### Remaining Items
-- [ ] Heartbeat visualization could be improved to show actual AppendEntries RPCs (would need backend changes)
-- [ ] Kill/restart functionality currently disabled (read-only mode)
+- [x] Heartbeat visualization now shows actual AppendEntries RPCs
+- [x] Kill/restart functionality implemented via gateway proxy
+
+## Implementation Summary
+
+### RPC Event Streaming
+- **Protobuf**: Added `RaftRpcEvent` message and `PushRpc` method to `RaftGateway` service
+- **Observer Pattern**: Created `RpcObserver` interface in raft-core
+- **Wire-up**: Nodes emit RPC events when sending/receiving AppendEntries and RequestVote
+- **Gateway**: Receives RPC events and broadcasts to WebSocket clients
+- **Frontend**: Handles RPC events to animate heartbeat dots
+
+### Kill/Restart Functionality
+- **Gateway Proxy**: Gateway maintains gRPC clients to all nodes
+- **HTTP Endpoints**: `/api/nodes/{id}/kill` and `/api/nodes/{id}/restart`
+- **Frontend**: Calls gateway endpoints to control nodes
+
+### Data Flow
+```
+Node RPC (send/receive)
+  → RpcObserver.OnRpcSend/OnRpcReceive
+    → Pusher.PushRpc (gRPC)
+      → Gateway.Broadcast (WebSocket)
+        → Frontend (heartbeat animation)
+```
+
+```
+User clicks kill
+  → Frontend calls POST /api/nodes/{id}/kill
+    → Gateway calls node.SetAlive(false) via gRPC
+      → Node transitions to DEAD state
+        → StateObserver.OnStateChange
+          → Pusher.PushState
+            → Frontend updates UI
+```
 
 ### Q1: Should we support interactive commands?
 
