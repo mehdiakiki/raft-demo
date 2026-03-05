@@ -120,6 +120,32 @@ export function useRaft() {
     return () => clearInterval(interval);
   }, []);
 
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const now = Date.now();
+      setNodes(prev => {
+        const updated = { ...prev };
+        for (const id of Object.keys(updated)) {
+          const node = updated[id];
+          if (node.state !== 'LEADER' && node.state !== 'DEAD') {
+            const elapsed = now - node.electionStartedAt;
+            updated[id] = {
+              ...node,
+              electionTimer: Math.min(elapsed, node.electionTimeout),
+            };
+          } else {
+            updated[id] = {
+              ...node,
+              electionTimer: 0,
+            };
+          }
+        }
+        return updated;
+      });
+    }, 50);
+    return () => clearInterval(interval);
+  }, []);
+
   const toggleNodeState = useCallback((id: string) => {
     console.log('toggleNodeState not implemented in event-sourcing mode', id);
   }, []);

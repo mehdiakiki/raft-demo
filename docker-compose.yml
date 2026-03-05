@@ -3,34 +3,79 @@ version: '3.8'
 services:
   node-a:
     image: ${RAFT_CORE_NODE_IMAGE:-ghcr.io/medvih/raft-core-node:latest}
-    command: ["--id=A","--addr=:60051","--peers=B=node-b:60052,C=node-c:60053,D=node-d:60054,E=node-e:60055","--gateway=gateway:50051","--log-level=debug"]
+    command: [
+      "--id=A",
+      "--addr=:60051",
+      "--peers=B=node-b:60052,C=node-c:60053,D=node-d:60054,E=node-e:60055",
+      "--gateway=gateway:50051",
+      "--heartbeat-interval=2000ms",
+      "--election-timeout-min=8000ms",
+      "--election-timeout-max=10000ms",
+      "--log-level=debug"
+    ]
     expose: ["60051"]
 
   node-b:
     image: ${RAFT_CORE_NODE_IMAGE:-ghcr.io/medvih/raft-core-node:latest}
-    command: ["--id=B","--addr=:60052","--peers=A=node-a:60051,C=node-c:60053,D=node-d:60054,E=node-e:60055","--gateway=gateway:50051","--log-level=debug"]
+    command: [
+      "--id=B",
+      "--addr=:60052",
+      "--peers=A=node-a:60051,C=node-c:60053,D=node-d:60054,E=node-e:60055",
+      "--gateway=gateway:50051",
+      "--heartbeat-interval=2000ms",
+      "--election-timeout-min=11000ms",
+      "--election-timeout-max=13000ms",
+      "--log-level=debug"
+    ]
     expose: ["60052"]
 
   node-c:
     image: ${RAFT_CORE_NODE_IMAGE:-ghcr.io/medvih/raft-core-node:latest}
-    command: ["--id=C","--addr=:60053","--peers=A=node-a:60051,B=node-b:60052,D=node-d:60054,E=node-e:60055","--gateway=gateway:50051","--log-level=debug"]
+    command: [
+      "--id=C",
+      "--addr=:60053",
+      "--peers=A=node-a:60051,B=node-b:60052,D=node-d:60054,E=node-e:60055",
+      "--gateway=gateway:50051",
+      "--heartbeat-interval=2000ms",
+      "--election-timeout-min=14000ms",
+      "--election-timeout-max=16000ms",
+      "--log-level=debug"
+    ]
     expose: ["60053"]
 
   node-d:
     image: ${RAFT_CORE_NODE_IMAGE:-ghcr.io/medvih/raft-core-node:latest}
-    command: ["--id=D","--addr=:60054","--peers=A=node-a:60051,B=node-b:60052,C=node-c:60053,E=node-e:60055","--gateway=gateway:50051","--log-level=debug"]
+    command: [
+      "--id=D",
+      "--addr=:60054",
+      "--peers=A=node-a:60051,B=node-b:60052,C=node-c:60053,E=node-e:60055",
+      "--gateway=gateway:50051",
+      "--heartbeat-interval=2000ms",
+      "--election-timeout-min=17000ms",
+      "--election-timeout-max=19000ms",
+      "--log-level=debug"
+    ]
     expose: ["60054"]
 
   node-e:
     image: ${RAFT_CORE_NODE_IMAGE:-ghcr.io/medvih/raft-core-node:latest}
-    command: ["--id=E","--addr=:60055","--peers=A=node-a:60051,B=node-b:60052,C=node-c:60053,D=node-d:60054","--gateway=gateway:50051","--log-level=debug"]
+    command: [
+      "--id=E",
+      "--addr=:60055",
+      "--peers=A=node-a:60051,B=node-b:60052,C=node-c:60053,D=node-d:60054",
+      "--gateway=gateway:50051",
+      "--heartbeat-interval=2000ms",
+      "--election-timeout-min=20000ms",
+      "--election-timeout-max=22000ms",
+      "--log-level=debug"
+    ]
     expose: ["60055"]
 
   gateway:
     build:
       context: .
       dockerfile: Dockerfile.gateway
-    command: ["--http-addr=:8080","--grpc-addr=:50051","--log-level=debug"]
+    command: ["--http-addr=:8080", "--grpc-addr=:50051", "--log-level=debug"]
     ports:
       - "8080:8080"
       - "50051:50051"
