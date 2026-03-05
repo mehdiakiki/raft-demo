@@ -89,7 +89,6 @@ services:
     ports:
       - "8080:8080"
       - "50051:50051"
-    depends_on: [node-a,node-b,node-c,node-d,node-e]
 
   frontend:
     build:

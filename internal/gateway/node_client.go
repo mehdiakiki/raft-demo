@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	pb "github.com/mehdiakiki/raft-core/gen/raft"
@@ -19,6 +20,7 @@ type NodeClient struct {
 	addr   string
 	client pb.RaftServiceClient
 	conn   *grpc.ClientConn
+	mu     sync.Mutex
 }
 
 type NodeClientMap map[string]*NodeClient
@@ -37,33 +39,48 @@ func NewNodeClientMap(nodeSpec string) (NodeClientMap, error) {
 		}
 		nodeID, addr := parts[0], parts[1]
 
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		conn, err := grpc.DialContext(ctx, addr,
-			grpc.WithTransportCredentials(insecure.NewCredentials()),
-			grpc.WithBlock(),
-		)
-		if err != nil {
-			return nil, fmt.Errorf("could not dial node %s at %s: %w", nodeID, addr, err)
-		}
-
 		clients[nodeID] = &NodeClient{
-			id:     nodeID,
-			addr:   addr,
-			client: pb.NewRaftServiceClient(conn),
-			conn:   conn,
+			id:   nodeID,
+			addr: addr,
 		}
-		slog.Info("connected to node", "node", nodeID, "addr", addr)
+		slog.Debug("registered node", "node", nodeID, "addr", addr)
 	}
 
 	return clients, nil
+}
+
+func (nc *NodeClient) connect() error {
+	nc.mu.Lock()
+	defer nc.mu.Unlock()
+
+	if nc.client != nil {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	conn, err := grpc.DialContext(ctx, nc.addr,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		return fmt.Errorf("could not dial node %s at %s: %w", nc.id, nc.addr, err)
+	}
+
+	nc.conn = conn
+	nc.client = pb.NewRaftServiceClient(conn)
+	slog.Info("connected to node", "node", nc.id, "addr", nc.addr)
+	return nil
 }
 
 func (m NodeClientMap) KillNode(nodeID string, alive bool) error {
 	client, ok := m[nodeID]
 	if !ok {
 		return fmt.Errorf("node %s not found", nodeID)
+	}
+
+	if err := client.connect(); err != nil {
+		return err
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -80,7 +97,11 @@ func (m NodeClientMap) KillNode(nodeID string, alive bool) error {
 
 func (m NodeClientMap) Close() {
 	for _, client := range m {
-		client.conn.Close()
+		client.mu.Lock()
+		if client.conn != nil {
+			client.conn.Close()
+		}
+		client.mu.Unlock()
 	}
 }
 

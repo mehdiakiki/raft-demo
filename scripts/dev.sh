@@ -27,6 +27,16 @@ FOLLOW_LOGS="${FOLLOW_LOGS:-}"
 COMMAND="${1:-}"
 shift || true
 
+# Detect docker compose command
+if command -v docker-compose >/dev/null 2>&1; then
+	DOCKER_COMPOSE="docker-compose"
+elif docker compose version >/dev/null 2>&1; then
+	DOCKER_COMPOSE="docker compose"
+else
+	echo "Error: Neither docker-compose nor 'docker compose' is available"
+	exit 1
+fi
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
@@ -64,8 +74,8 @@ build_demo() {
 	log "Building raft-demo..."
 	cd "$DEMO_ROOT"
 
-	# Build gateway
-	go build -o /tmp/raft-demo-gateway ./cmd/gateway 2>&1 | tail -3 || true
+	# Build gateway binary for Docker
+	CGO_ENABLED=0 GOOS=linux go build -o gateway ./cmd/gateway 2>&1 | tail -3 || true
 
 	# Build frontend (only if needed)
 	if [ ! -d "frontend/.next" ] || [ "frontend/package.json" -nt "frontend/.next" ]; then
@@ -82,13 +92,13 @@ start_stack() {
 	cd "$DEMO_ROOT"
 
 	# Check if already running
-	if docker compose ps -q 2>/dev/null | grep -q .; then
+	if $DOCKER_COMPOSE ps -q 2>/dev/null | grep -q .; then
 		warn "Stack already running. Use 'dev.sh restart' to restart."
 		return 0
 	fi
 
 	log "Starting stack..."
-	RAFT_CORE_NODE_IMAGE=raft-core-node:dev docker compose up -d --build 2>&1 | tail -5
+	RAFT_CORE_NODE_IMAGE=raft-core-node:dev $DOCKER_COMPOSE up -d --build 2>&1 | tail -5
 
 	# Wait for healthy
 	log "Waiting for services..."
@@ -142,7 +152,7 @@ show_status() {
 
 	# Show containers
 	echo "  Containers:"
-	docker compose ps 2>/dev/null | tail -n +2 | while read -r line; do
+	$DOCKER_COMPOSE ps 2>/dev/null | tail -n +2 | while read -r line; do
 		echo "    $line"
 	done || echo "    (none running)"
 	echo ""
@@ -157,13 +167,13 @@ show_status() {
 
 follow_logs() {
 	cd "$DEMO_ROOT"
-	docker compose logs -f --tail=100
+	$DOCKER_COMPOSE logs -f --tail=100
 }
 
 stop_stack() {
 	cd "$DEMO_ROOT"
 	log "Stopping stack..."
-	docker compose down --remove-orphans 2>&1 | tail -3
+	$DOCKER_COMPOSE down --remove-orphans 2>&1 | tail -3
 	ok "Stack stopped"
 }
 
