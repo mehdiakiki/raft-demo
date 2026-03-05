@@ -170,7 +170,33 @@ environment:
 
 ---
 
-## Decision Points
+## Quality Control Checklist
+
+### Timing Data Flow ✅
+- Protobuf has `heartbeat_interval_ms` and `election_timeout_ms` fields
+- Pusher sends timing data from backend
+- Frontend receives timing in `RaftStateEvent`
+- Frontend uses timing for election ring animation
+
+### Docker Compose ✅
+- Nodes configured with slow demo timings:
+  - heartbeat-interval=2000ms
+  - election-timeout: 8000-22000ms (staggered per node)
+- Gateway configured correctly
+
+### Frontend Animation ✅
+- Election timer increments based on `electionStartedAt` timestamp
+- Ring progress reflects real backend timeout
+- Heartbeat dots animate when leader state is received
+
+### Data Accuracy
+- All timing values come from backend (no hardcoded defaults in animation)
+- State changes trigger timer reset
+- Real term/vote/leader data flows through
+
+### Remaining Items
+- [ ] Heartbeat visualization could be improved to show actual AppendEntries RPCs (would need backend changes)
+- [ ] Kill/restart functionality currently disabled (read-only mode)
 
 ### Q1: Should we support interactive commands?
 
