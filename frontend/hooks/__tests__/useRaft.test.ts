@@ -5,14 +5,21 @@
 //   - Use @testing-library/react renderHook to render the hook in isolation
 //
 // In event-sourcing mode:
-//   - No REST API calls (all state comes via WebSocket)
-//   - toggleNodeState and clientRequest are no-ops (stubs)
+//   - State telemetry comes from WebSocket
+//   - Control/command actions go through gateway REST proxy calls
 //   - State is reconstructed from RaftStateEvent messages
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
 import { useRaft } from '@/hooks/useRaft';
 import type { RaftStateEvent } from '@/lib/types';
+import * as api from '@/lib/api';
+
+vi.mock('@/lib/api', () => ({
+    killNode: vi.fn(),
+    restartNode: vi.fn(),
+    submitCommand: vi.fn(),
+}));
 
 // ── FakeWebSocket ─────────────────────────────────────────────────────────────
 
@@ -68,6 +75,15 @@ beforeEach(() => {
     FakeWebSocket.instances = [];
     vi.useFakeTimers();
     vi.stubGlobal('WebSocket', FakeWebSocket);
+    vi.mocked(api.killNode).mockResolvedValue({ node_id: 'A', alive: false });
+    vi.mocked(api.restartNode).mockResolvedValue({ node_id: 'A', alive: true });
+    vi.mocked(api.submitCommand).mockResolvedValue({
+        success: true,
+        leader_id: 'A',
+        duplicate: false,
+        committed: true,
+        result: '',
+    });
 });
 
 afterEach(() => {
@@ -203,42 +219,150 @@ describe('state mapping', () => {
         expect(result.current.nodes['A'].state).toBe('CANDIDATE');
         expect(result.current.nodes['A'].term).toBe(2);
     });
+
+    it('shows a candidate visual hold on direct follower-to-leader promotion', () => {
+        const { result } = renderHook(() => useRaft());
+        act(() => { FakeWebSocket.instances[0].simulateOpen(); });
+        act(() => {
+            FakeWebSocket.instances[0].simulateMessage(makeEvent({
+                state: 'FOLLOWER',
+                current_term: 1,
+                election_timeout_ms: 5000,
+                event_time_ms: 1000,
+            }));
+            FakeWebSocket.instances[0].simulateMessage(makeEvent({
+                state: 'LEADER',
+                current_term: 2,
+                event_time_ms: 1200,
+            }));
+        });
+
+        expect(result.current.nodes['A'].actualState).toBe('LEADER');
+        expect(result.current.nodes['A'].state).toBe('CANDIDATE');
+
+        act(() => { vi.advanceTimersByTime(1700); });
+        expect(result.current.nodes['A'].state).toBe('LEADER');
+    });
+
+    it('keeps timeout progression stable across same-cycle state snapshots', () => {
+        const { result } = renderHook(() => useRaft());
+        act(() => { FakeWebSocket.instances[0].simulateOpen(); });
+        act(() => {
+            FakeWebSocket.instances[0].simulateMessage(makeEvent({
+                state: 'FOLLOWER',
+                current_term: 1,
+                election_timeout_ms: 5000,
+                event_time_ms: 1000,
+            }));
+        });
+
+        act(() => { vi.advanceTimersByTime(700); });
+        const before = result.current.nodes['A'];
+        expect(before.electionTimer).toBeGreaterThan(0);
+        expect(before.electionTimeout).toBe(5000);
+
+        act(() => {
+            FakeWebSocket.instances[0].simulateMessage(makeEvent({
+                state: 'FOLLOWER',
+                current_term: 1,
+                election_timeout_ms: 6200,
+                event_time_ms: 1200,
+            }));
+        });
+
+        const after = result.current.nodes['A'];
+        expect(after.electionTimer).toBeGreaterThan(0);
+        expect(after.electionTimeout).toBe(5000);
+    });
+
+    it('preserves candidate visual hold across follower snapshots in same cycle', () => {
+        const { result } = renderHook(() => useRaft());
+        act(() => { FakeWebSocket.instances[0].simulateOpen(); });
+        act(() => {
+            FakeWebSocket.instances[0].simulateMessage(makeEvent({
+                state: 'FOLLOWER',
+                current_term: 1,
+                election_timeout_ms: 5000,
+                event_time_ms: 1000,
+            }));
+        });
+
+        act(() => { vi.advanceTimersByTime(5100); });
+        expect(result.current.nodes['A'].state).toBe('CANDIDATE');
+
+        act(() => {
+            FakeWebSocket.instances[0].simulateMessage(makeEvent({
+                state: 'FOLLOWER',
+                current_term: 1,
+                election_timeout_ms: 5400,
+                event_time_ms: 1400,
+            }));
+        });
+
+        expect(result.current.nodes['A'].state).toBe('CANDIDATE');
+    });
 });
 
-// ── 3. Stubs (event-sourcing mode) ─────────────────────────────────────────────
+// ── 3. Gateway control/command API ───────────────────────────────────────────
 
-describe('stubs', () => {
-    it('toggleNodeState is a no-op stub', async () => {
+describe('gateway control/command API', () => {
+    it('toggleNodeState routes follower kill through gateway API', async () => {
         const { result } = renderHook(() => useRaft());
         act(() => { FakeWebSocket.instances[0].simulateOpen(); });
         act(() => {
             FakeWebSocket.instances[0].simulateMessage(makeEvent({ node_id: 'B', state: 'FOLLOWER' }));
         });
         await act(async () => { result.current.toggleNodeState('B'); });
-        expect(result.current.nodes['B'].state).toBe('FOLLOWER');
+        expect(api.killNode).toHaveBeenCalledWith('B');
     });
 
-    it('clientRequest returns failure stub', async () => {
+    it('clientRequest encodes SET and sends submitCommand request', async () => {
         const { result } = renderHook(() => useRaft());
         act(() => { FakeWebSocket.instances[0].simulateOpen(); });
+        act(() => {
+            FakeWebSocket.instances[0].simulateMessage(makeEvent({ node_id: 'A', state: 'LEADER' }));
+        });
+
         const res = await result.current.clientRequest('SET x=1');
-        expect(res.success).toBe(false);
+        expect(res.success).toBe(true);
+
+        expect(api.submitCommand).toHaveBeenCalledTimes(1);
+        const [encoded, clientID, seqNum, leaderID] = vi.mocked(api.submitCommand).mock.calls[0];
+        expect(JSON.parse(encoded)).toEqual({ op: 'set', key: 'x', value: '1' });
+        expect(clientID).toMatch(/^fe-/);
+        expect(seqNum).toBe(1);
+        expect(leaderID).toBe('A');
+    });
+
+    it('clientRequest rejects unsupported commands before submit', async () => {
+        const { result } = renderHook(() => useRaft());
+        act(() => { FakeWebSocket.instances[0].simulateOpen(); });
+
+        await expect(result.current.clientRequest('INCR x')).rejects.toThrow(/Unsupported command format/);
+        expect(api.submitCommand).not.toHaveBeenCalled();
     });
 });
 
 // ── 4. Heartbeats visualization ───────────────────────────────────────────────
 
 describe('heartbeats visualization', () => {
-    it('generates heartbeat messages when a LEADER event arrives', () => {
+    it('generates heartbeat messages when APPEND_ENTRIES RPCs arrive', () => {
         const { result } = renderHook(() => useRaft());
         act(() => { FakeWebSocket.instances[0].simulateOpen(); });
         act(() => {
             FakeWebSocket.instances[0].simulateMessage(makeEvent({ node_id: 'A', state: 'FOLLOWER' }));
             FakeWebSocket.instances[0].simulateMessage(makeEvent({ node_id: 'B', state: 'FOLLOWER' }));
-            FakeWebSocket.instances[0].simulateMessage(makeEvent({ node_id: 'A', state: 'LEADER' }));
+            FakeWebSocket.instances[0].simulateMessage({
+                type: 'rpc',
+                from_node: 'A',
+                to_node: 'B',
+                rpc_type: 'APPEND_ENTRIES',
+                event_time_ms: 1500,
+            });
         });
-        expect(result.current.heartbeats.length).toBeGreaterThan(0);
-        expect(result.current.heartbeats.every(h => h.from === 'A')).toBe(true);
+        expect(result.current.heartbeats).toHaveLength(1);
+        expect(result.current.heartbeats[0].from).toBe('A');
+        expect(result.current.heartbeats[0].to).toBe('B');
     });
 
     it('removes heartbeats after progress completes', () => {
@@ -246,16 +370,192 @@ describe('heartbeats visualization', () => {
         act(() => { FakeWebSocket.instances[0].simulateOpen(); });
         act(() => {
             FakeWebSocket.instances[0].simulateMessage(makeEvent({ node_id: 'B', state: 'FOLLOWER' }));
-            FakeWebSocket.instances[0].simulateMessage(makeEvent({ node_id: 'A', state: 'LEADER' }));
+            FakeWebSocket.instances[0].simulateMessage({
+                type: 'rpc',
+                from_node: 'A',
+                to_node: 'B',
+                rpc_type: 'APPEND_ENTRIES',
+                event_time_ms: 1500,
+            });
         });
         expect(result.current.heartbeats.length).toBeGreaterThan(0);
         const before = result.current.heartbeats.length;
         act(() => { vi.advanceTimersByTime(2000); });
         expect(result.current.heartbeats.length).toBeLessThan(before);
     });
+
+    it('resets follower timeout cycle when APPEND_ENTRIES arrives', () => {
+        const { result } = renderHook(() => useRaft());
+        act(() => { FakeWebSocket.instances[0].simulateOpen(); });
+        act(() => {
+            FakeWebSocket.instances[0].simulateMessage(makeEvent({
+                node_id: 'B',
+                state: 'FOLLOWER',
+                election_timeout_ms: 5000,
+                event_time_ms: 1000,
+            }));
+        });
+
+        act(() => { vi.advanceTimersByTime(500); });
+        expect(result.current.nodes['B'].electionTimer).toBeGreaterThan(0);
+
+        act(() => {
+            FakeWebSocket.instances[0].simulateMessage({
+                type: 'rpc',
+                from_node: 'A',
+                to_node: 'B',
+                rpc_type: 'APPEND_ENTRIES',
+                event_time_ms: 2000,
+            });
+        });
+
+        expect(result.current.nodes['B'].electionTimer).toBe(0);
+        expect(result.current.nodes['B'].electionStartedAt).toBe(2000);
+    });
+
+    it('ignores non-heartbeat RPCs for timeout reset', () => {
+        const { result } = renderHook(() => useRaft());
+        act(() => { FakeWebSocket.instances[0].simulateOpen(); });
+        act(() => {
+            FakeWebSocket.instances[0].simulateMessage(makeEvent({
+                node_id: 'B',
+                state: 'FOLLOWER',
+                election_timeout_ms: 5000,
+                event_time_ms: 1000,
+            }));
+        });
+
+        act(() => { vi.advanceTimersByTime(500); });
+        const before = result.current.nodes['B'].electionStartedAt;
+
+        act(() => {
+            FakeWebSocket.instances[0].simulateMessage({
+                type: 'rpc',
+                from_node: 'A',
+                to_node: 'B',
+                rpc_type: 'REQUEST_VOTE',
+                event_time_ms: 2000,
+            });
+        });
+
+        expect(result.current.nodes['B'].electionStartedAt).toBe(before);
+        expect(result.current.heartbeats).toHaveLength(0);
+    });
 });
 
-// ── 5. Reset ──────────────────────────────────────────────────────────────────
+// ── 5. Vote flow visualization ───────────────────────────────────────────────
+
+describe('vote flow visualization', () => {
+    it('creates REQUEST_VOTE packet animations from RPC events', () => {
+        const { result } = renderHook(() => useRaft());
+        act(() => { FakeWebSocket.instances[0].simulateOpen(); });
+        act(() => {
+            FakeWebSocket.instances[0].simulateMessage({
+                type: 'rpc',
+                from_node: 'A',
+                to_node: 'B',
+                rpc_type: 'REQUEST_VOTE',
+                event_time_ms: 4000,
+            });
+        });
+
+        expect(result.current.messages).toHaveLength(1);
+        expect(result.current.messages[0]).toMatchObject({
+            from: 'A',
+            to: 'B',
+            type: 'REQUEST_VOTE',
+        });
+    });
+
+    it('deduplicates duplicate vote RPC packets emitted by send/receive observers', () => {
+        const { result } = renderHook(() => useRaft());
+        act(() => { FakeWebSocket.instances[0].simulateOpen(); });
+        act(() => {
+            FakeWebSocket.instances[0].simulateMessage({
+                type: 'rpc',
+                from_node: 'A',
+                to_node: 'C',
+                rpc_type: 'REQUEST_VOTE',
+                event_time_ms: 5000,
+            });
+            FakeWebSocket.instances[0].simulateMessage({
+                type: 'rpc',
+                from_node: 'A',
+                to_node: 'C',
+                rpc_type: 'REQUEST_VOTE',
+                event_time_ms: 5060,
+            });
+        });
+
+        expect(result.current.messages).toHaveLength(1);
+    });
+
+    it('infers VOTE_REPLY packets from voted_for state changes', () => {
+        const { result } = renderHook(() => useRaft());
+        act(() => { FakeWebSocket.instances[0].simulateOpen(); });
+        act(() => {
+            FakeWebSocket.instances[0].simulateMessage(makeEvent({
+                node_id: 'A',
+                state: 'CANDIDATE',
+                current_term: 2,
+                voted_for: 'A',
+                event_time_ms: 6000,
+            }));
+            FakeWebSocket.instances[0].simulateMessage(makeEvent({
+                node_id: 'B',
+                state: 'FOLLOWER',
+                current_term: 2,
+                voted_for: 'A',
+                event_time_ms: 6050,
+            }));
+        });
+
+        const voteReply = result.current.messages.find((m) => m.type === 'VOTE_REPLY');
+        expect(voteReply).toBeDefined();
+        expect(voteReply).toMatchObject({
+            from: 'B',
+            to: 'A',
+            voteGranted: true,
+        });
+    });
+
+    it('tracks candidate vote tallies from replayed state', () => {
+        const { result } = renderHook(() => useRaft());
+        act(() => { FakeWebSocket.instances[0].simulateOpen(); });
+        act(() => {
+            FakeWebSocket.instances[0].simulateMessage(makeEvent({
+                node_id: 'A',
+                state: 'CANDIDATE',
+                current_term: 3,
+                voted_for: 'A',
+                event_time_ms: 7000,
+            }));
+            FakeWebSocket.instances[0].simulateMessage(makeEvent({
+                node_id: 'B',
+                state: 'FOLLOWER',
+                current_term: 3,
+                voted_for: 'A',
+                event_time_ms: 7050,
+            }));
+            FakeWebSocket.instances[0].simulateMessage(makeEvent({
+                node_id: 'C',
+                state: 'FOLLOWER',
+                current_term: 3,
+                event_time_ms: 7100,
+            }));
+        });
+
+        expect(result.current.voteTallies['A']).toMatchObject({
+            candidateId: 'A',
+            term: 3,
+            granted: 2,
+            quorum: 2,
+            status: 'quorum',
+        });
+    });
+});
+
+// ── 6. Reset ──────────────────────────────────────────────────────────────────
 
 describe('reset', () => {
     it('reconnects when reset is called', () => {

@@ -1,5 +1,5 @@
 import type { FormEvent } from 'react';
-import type { ConnectionStatus, RaftNode } from '@/hooks/useRaft';
+import type { CandidateVoteTally, ConnectionStatus, RaftNode } from '@/hooks/useRaft';
 import {
   CLUSTER_STATE_TITLE_CLASS,
   type CommandDispatchStatus,
@@ -12,6 +12,7 @@ import {
 interface ClusterSidebarProps {
   commandStatus: CommandDispatchStatus;
   nodes: Record<string, RaftNode>;
+  voteTallies: Record<string, CandidateVoteTally>;
   connectionStatus: ConnectionStatus;
   isRunning: boolean;
   commandInput: string;
@@ -22,6 +23,7 @@ interface ClusterSidebarProps {
 export function ClusterSidebar({
   commandStatus,
   nodes,
+  voteTallies,
   connectionStatus,
   isRunning,
   commandInput,
@@ -42,7 +44,7 @@ export function ClusterSidebar({
       <TimeoutDebugPanel nodes={nodes} />
 
       <div className={CLUSTER_STATE_TITLE_CLASS}>Cluster State</div>
-      <ClusterNodeList nodes={nodes} />
+      <ClusterNodeList nodes={nodes} voteTallies={voteTallies} />
     </div>
   );
 }
