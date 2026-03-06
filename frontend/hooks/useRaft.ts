@@ -95,9 +95,6 @@ function buildVoteTallies(
     const entry = ledger.get(voteLedgerKey(id, node.term));
     const grantedBy = new Set(entry?.grantedBy ?? []);
     const rejectedBy = new Set(entry?.rejectedBy ?? []);
-    if (node.votedFor === id) {
-      grantedBy.add(id);
-    }
 
     const granted = grantedBy.size;
     const rejected = rejectedBy.size;
@@ -209,9 +206,17 @@ export function useRaft() {
       return false;
     }
 
-    const fallbackKey = `${rpcEvent.rpc_type}|${rpcEvent.from_node}|${rpcEvent.to_node}|${rpcEvent.candidate_id ?? ""}|${String(rpcEvent.vote_granted ?? "na")}`;
-    const lastSeen = fallbackRpcSeenRef.current.get(fallbackKey);
-    if (lastSeen !== undefined && Math.abs(eventTimeMs - lastSeen) <= 200) {
+    // Legacy payload fallback (no rpc_id): dedupe deterministically by event identity.
+    const fallbackKey = [
+      rpcEvent.rpc_type,
+      rpcEvent.from_node,
+      rpcEvent.to_node,
+      rpcEvent.candidate_id ?? "",
+      String(rpcEvent.vote_granted ?? "na"),
+      String(rpcEvent.term ?? "na"),
+      String(eventTimeMs),
+    ].join("|");
+    if (fallbackRpcSeenRef.current.has(fallbackKey)) {
       return true;
     }
 
