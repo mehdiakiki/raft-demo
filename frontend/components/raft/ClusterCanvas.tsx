@@ -47,7 +47,7 @@ const ELECTION_RING_PROGRESS_CLASS =
 const NODE_CARD = cva(
   cn(
     RAFT_INTERACTIVE_STANDARD({ pressable: true }),
-    'absolute w-24 h-24 -ml-12 -mt-12 rounded-xl border flex flex-col items-center justify-center cursor-pointer duration-300 shadow-2xl backdrop-blur-md hover:scale-105',
+    'absolute w-24 h-24 -ml-12 -mt-12 rounded-xl border flex flex-col items-center justify-center cursor-pointer transition-[background-color,border-color,color,box-shadow,transform,opacity] duration-500 ease-out shadow-2xl backdrop-blur-md hover:scale-105',
   ),
   {
     variants: {
@@ -61,6 +61,9 @@ const NODE_CARD = cva(
     },
   },
 );
+
+const NODE_TRANSITION_PULSE_CLASS =
+  'motion-safe:animate-pulse motion-reduce:animate-none shadow-[0_0_28px_rgba(234,179,8,0.35)]';
 
 const NODE_POWER_BUTTON = cva(
   cn(
@@ -134,6 +137,7 @@ const NODE_LEADER_HEARTBEAT_DOT_CLASS =
   'inline-block w-1.5 h-1.5 rounded-full bg-emerald-400 motion-safe:animate-pulse motion-reduce:animate-none';
 const NODE_LABEL_CLASS = 'font-mono font-bold text-lg leading-none mb-1';
 const NODE_STATE_LABEL_CLASS = 'text-[9px] uppercase tracking-widest opacity-80 font-mono';
+const VOTE_REPLY_DENIED_PACKET_CLASS = 'bg-orange-400 shadow-[0_0_10px_rgba(251,146,60,0.55)]';
 
 function nodeCardClass(isStale: boolean, renderState: RaftNode['actualState']): string {
   return cn(NODE_CARD({ stale: isStale }), !isStale && STATE_COLORS[renderState]);
@@ -143,8 +147,11 @@ function nodePowerButtonClass(isDead: boolean): string {
   return NODE_POWER_BUTTON({ dead: isDead });
 }
 
-function rpcMessageClass(type: LegacyMessage['type']): string {
-  return cn(PACKET_DOT(), MSG_COLORS[type]);
+function rpcMessageClass(message: LegacyMessage): string {
+  if (message.type === 'VOTE_REPLY' && message.voteGranted === false) {
+    return cn(PACKET_DOT(), VOTE_REPLY_DENIED_PACKET_CLASS);
+  }
+  return cn(PACKET_DOT(), MSG_COLORS[message.type]);
 }
 
 function nodeRoleIconClass(tone: NodeIconTone): string {
@@ -207,12 +214,13 @@ export function ClusterCanvas({
           if (!fromPos || !toPos) return null;
           const x = fromPos.x + (toPos.x - fromPos.x) * msg.progress;
           const y = fromPos.y + (toPos.y - fromPos.y) * msg.progress;
+          const opacity = Math.sin(msg.progress * Math.PI);
 
           return (
             <div
               key={msg.id}
-              className={rpcMessageClass(msg.type)}
-              style={{ left: x, top: y }}
+              className={rpcMessageClass(msg)}
+              style={{ left: x, top: y, opacity }}
               title={msg.type}
               aria-hidden="true"
             />
@@ -223,15 +231,20 @@ export function ClusterCanvas({
           const node = nodes[id];
           const pos = nodePositions[id];
           if (!node) return null;
-          const isDead = node.actualState === 'DEAD';
+          const visualState = node.state;
+          const actualState = node.actualState;
+          const isDead = actualState === 'DEAD';
           const isStale = node.stale && !isDead;
-          const renderState = node.actualState;
-          const hasVisualLag = node.state !== node.actualState;
+          const renderState = visualState;
+          const hasVisualLag = visualState !== actualState;
 
           return (
             <div
               key={id}
-              className={nodeCardClass(isStale, renderState)}
+              className={cn(
+                nodeCardClass(isStale, renderState),
+                !isStale && renderState === 'CANDIDATE' && NODE_TRANSITION_PULSE_CLASS,
+              )}
               style={{ left: pos.x, top: pos.y }}
               onClick={() => toggleNodeState(id)}
               onKeyDown={(e) => {
@@ -283,7 +296,7 @@ export function ClusterCanvas({
               )}
               {hasVisualLag && !isStale && (
                 <div className={nodeStateBadgeClass('visualLag')}>
-                  VIS:{node.state}
+                  ACT:{actualState}
                 </div>
               )}
 

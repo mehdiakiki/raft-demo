@@ -21,6 +21,7 @@ interface ClusterLayoutProps {
   messages: ReturnType<typeof useRaft>['messages'];
   nodePositions: NodePositions;
   nodes: Record<string, RaftNode>;
+  voteTallies: ReturnType<typeof useRaft>['voteTallies'];
   onSubmit: (e: FormEvent<HTMLFormElement>) => void;
   reset: () => void;
   setChaosMode: (enabled: boolean) => void;
@@ -66,7 +67,7 @@ function commandSubmitReadiness(
     };
   }
   if (!isRunning) {
-    return { canSubmit: false, leaderID: null, reason: 'Simulation is paused. Resume before submitting commands.' };
+    return { canSubmit: false, leaderID: null, reason: 'Frontend stream is disconnected. Connect FE before submitting commands.' };
   }
 
   const leaderEntry = Object.entries(nodes).find(([, node]) => node.actualState === 'LEADER' && !node.stale);
@@ -95,6 +96,7 @@ function ClusterLayout({
   messages,
   nodePositions,
   nodes,
+  voteTallies,
   onSubmit,
   reset,
   setChaosMode,
@@ -123,6 +125,7 @@ function ClusterLayout({
       <ClusterSidebar
         commandStatus={commandStatus}
         nodes={nodes}
+        voteTallies={voteTallies}
         connectionStatus={connectionStatus}
         isRunning={isRunning}
         commandInput={commandInput}
@@ -136,6 +139,7 @@ function ClusterLayout({
 export default function RaftVisualizer() {
   const {
     nodes,
+    voteTallies,
     status,
     messages,
     heartbeats,
@@ -189,11 +193,25 @@ export default function RaftVisualizer() {
 
     try {
       const result = await clientRequest(cmd);
+      if (!result.success) {
+        const leaderHint = result.leader_id
+          ? ` Leader hint: N-${result.leader_id}.`
+          : '';
+        const detail = result.result ? ` ${result.result}` : '';
+        setCommandStatus({
+          state: 'error',
+          message: `Command was rejected by the cluster.${leaderHint}${detail}`,
+        });
+        return;
+      }
+
       const resultLeaderLabel = result.leader_id ? `N-${result.leader_id}` : leaderLabel;
       const duplicateSuffix = result.duplicate ? ' (deduplicated)' : '';
+      const commitSuffix = result.committed ? ' Committed.' : ' Accepted; waiting for commit.';
+      const resultSuffix = result.result ? ` Result: ${result.result}` : '';
       setCommandStatus({
         state: 'success',
-        message: `Command accepted by ${resultLeaderLabel}${duplicateSuffix}.`,
+        message: `Command accepted by ${resultLeaderLabel}${duplicateSuffix}.${commitSuffix}${resultSuffix}`,
       });
       setCommandInput('');
     } catch (error) {
@@ -217,6 +235,7 @@ export default function RaftVisualizer() {
       messages={messages}
       nodePositions={nodePositions}
       nodes={nodes}
+      voteTallies={voteTallies}
       onSubmit={handleSend}
       reset={reset}
       setChaosMode={setChaosMode}

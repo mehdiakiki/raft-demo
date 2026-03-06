@@ -1,6 +1,6 @@
 import type { FormEvent } from 'react';
 import { cva } from 'class-variance-authority';
-import type { ConnectionStatus, RaftNode } from '@/hooks/useRaft';
+import type { CandidateVoteTally, ConnectionStatus, RaftNode } from '@/hooks/useRaft';
 import { cn } from '@/lib/utils';
 import { Send } from 'lucide-react';
 import { NODE_IDS } from './constants';
@@ -34,6 +34,7 @@ interface PlaceholderNodeCardProps {
 interface ClusterNodeCardProps {
   id: string;
   node: RaftNode;
+  voteTally?: CandidateVoteTally;
 }
 
 export type CommandDispatchState = 'idle' | 'submitting' | 'success' | 'error';
@@ -55,6 +56,7 @@ export interface SidebarClientPanelProps {
 
 export interface ClusterNodeListProps {
   nodes: Record<string, RaftNode>;
+  voteTallies: Record<string, CandidateVoteTally>;
 }
 
 export interface TimeoutDebugPanelProps {
@@ -110,6 +112,25 @@ const NODE_METRIC_LABEL_CLASS = 'text-[9px] font-mono uppercase tracking-wider t
 const NODE_VOTE_ROW_CLASS = cn(
   RAFT_SURFACE({ tone: 'inset', padding: 'compact', radius: 'md' }),
   'flex justify-between text-[10px] font-mono mb-2',
+);
+const NODE_CANDIDATE_TALLY_ROW_CLASS = cn(
+  RAFT_SURFACE({ tone: 'inset', padding: 'compact', radius: 'md' }),
+  'flex items-center justify-between text-[10px] font-mono mb-2 border-yellow-500/25',
+);
+const NODE_CANDIDATE_TALLY_VALUE_CLASS = 'text-yellow-300';
+const NODE_CANDIDATE_TALLY_STATUS_CLASS = cva(
+  'px-2 py-0.5 rounded border text-[9px] uppercase tracking-wider',
+  {
+    variants: {
+      tone: {
+        collecting: 'text-yellow-300 border-yellow-500/30 bg-yellow-500/10',
+        quorum: 'text-emerald-300 border-emerald-500/30 bg-emerald-500/10',
+      },
+    },
+    defaultVariants: {
+      tone: 'collecting',
+    },
+  },
 );
 const NODE_VISUAL_HOLD_CLASS = cn(
   RAFT_SURFACE({ tone: 'inset', padding: 'compact', radius: 'md' }),
@@ -247,16 +268,20 @@ function roleBadge(node: RaftNode): RoleBadge {
   if (node.actualState === 'DEAD') {
     return { label: 'DEAD', tone: 'dead' };
   }
+  if (node.state === 'DEAD') {
+    return { label: 'DEAD', tone: 'dead' };
+  }
   if (node.stale) {
     return { label: 'STALE', tone: 'stale' };
   }
-  return ROLE_BADGE_BY_STATE[node.actualState];
+  return ROLE_BADGE_BY_STATE[node.state];
 }
 
 function compactRole(node: RaftNode): string {
   if (node.actualState === 'DEAD') return 'DEAD';
+  if (node.state === 'DEAD') return 'DEAD';
   if (node.stale) return 'STALE';
-  return node.actualState;
+  return node.state;
 }
 
 function heartbeatValue(node: RaftNode): string {
@@ -287,6 +312,13 @@ function toLogEntries(node: RaftNode): NodeLogEntryView[] {
   });
 }
 
+function shouldShowCandidateTally(node: RaftNode): boolean {
+  if (node.actualState === 'DEAD' || node.stale) {
+    return false;
+  }
+  return node.actualState === 'CANDIDATE' || node.state === 'CANDIDATE';
+}
+
 function resolveCommandAvailability(
   nodes: Record<string, RaftNode>,
   isRunning: boolean,
@@ -302,7 +334,7 @@ function resolveCommandAvailability(
     return { canSend: false, leaderID: null, reason: 'Gateway disconnected. Commands are unavailable.' };
   }
   if (!isRunning) {
-    return { canSend: false, leaderID: null, reason: 'Simulation is paused. Resume to send commands.' };
+    return { canSend: false, leaderID: null, reason: 'Frontend stream is disconnected. Connect FE to receive telemetry.' };
   }
 
   const leaderEntry = Object.entries(nodes).find(([, node]) => node.actualState === 'LEADER' && !node.stale);
@@ -330,7 +362,7 @@ function connectionBadge(status: ConnectionStatus): { label: string; tone: Statu
 
 function commandBadge(availability: CommandAvailability): { label: string; tone: StatusTone } {
   if (!availability.canSend) {
-    return { label: 'Command Path Paused', tone: 'warning' };
+    return { label: 'Command Path Unavailable', tone: 'warning' };
   }
   return {
     label: availability.leaderID ? `Leader N-${availability.leaderID} Ready` : 'Command Path Ready',
@@ -369,12 +401,13 @@ function PlaceholderNodeCard({ id }: PlaceholderNodeCardProps) {
   );
 }
 
-function ClusterNodeCard({ id, node }: ClusterNodeCardProps) {
+function ClusterNodeCard({ id, node, voteTally }: ClusterNodeCardProps) {
   const badge = roleBadge(node);
   const displayRole = compactRole(node);
   const votedForLabel = node.votedFor ? `N-${node.votedFor}` : 'None';
   const hasVisualLag = node.state !== node.actualState;
   const logEntries = toLogEntries(node);
+  const showCandidateTally = shouldShowCandidateTally(node) && voteTally;
 
   return (
     <div className={nodeCardClass()}>
@@ -404,7 +437,7 @@ function ClusterNodeCard({ id, node }: ClusterNodeCardProps) {
         <NodeMetric
           label="Election Left"
           value={electionValue(node)}
-          tone={node.actualState === 'CANDIDATE' ? 'warning' : 'default'}
+          tone={node.state === 'CANDIDATE' ? 'warning' : 'default'}
         />
       </div>
 
@@ -412,6 +445,19 @@ function ClusterNodeCard({ id, node }: ClusterNodeCardProps) {
         <span className="text-slate-500">VOTED FOR</span>
         <span className={VOTED_FOR_VALUE({ hasVote: Boolean(node.votedFor) })}>{votedForLabel}</span>
       </div>
+      {showCandidateTally && (
+        <div className={NODE_CANDIDATE_TALLY_ROW_CLASS}>
+          <span className="text-slate-400">VOTES (T{voteTally.term})</span>
+          <div className="flex items-center gap-2">
+            <span className={NODE_CANDIDATE_TALLY_VALUE_CLASS}>
+              {voteTally.granted}/{voteTally.quorum}
+            </span>
+            <span className={NODE_CANDIDATE_TALLY_STATUS_CLASS({ tone: voteTally.status })}>
+              {voteTally.status}
+            </span>
+          </div>
+        </div>
+      )}
       {hasVisualLag && (
         <div className={NODE_VISUAL_HOLD_CLASS}>
           VISUAL HOLD: showing {node.state}, actual {node.actualState}
@@ -598,7 +644,7 @@ export function TimeoutDebugPanel({ nodes }: TimeoutDebugPanelProps) {
   );
 }
 
-export function ClusterNodeList({ nodes }: ClusterNodeListProps) {
+export function ClusterNodeList({ nodes, voteTallies }: ClusterNodeListProps) {
   return (
     <div className={NODE_LIST_CLASS}>
       {NODE_IDS.map((id) => {
@@ -606,7 +652,7 @@ export function ClusterNodeList({ nodes }: ClusterNodeListProps) {
         if (!node) {
           return <PlaceholderNodeCard key={id} id={id} />;
         }
-        return <ClusterNodeCard key={id} id={id} node={node} />;
+        return <ClusterNodeCard key={id} id={id} node={node} voteTally={voteTallies[id]} />;
       })}
     </div>
   );
