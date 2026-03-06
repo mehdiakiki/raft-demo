@@ -19,16 +19,20 @@ flowchart LR
     F[Frontend UI]
     U[User]
 
-    A -->|PushState / PushRpc (gRPC)| G
-    B -->|PushState / PushRpc (gRPC)| G
-    C -->|PushState / PushRpc (gRPC)| G
-    D -->|PushState / PushRpc (gRPC)| G
-    E -->|PushState / PushRpc (gRPC)| G
+    A -->|RPC stream| G
+    B -->|RPC stream| G
+    C -->|RPC stream| G
+    D -->|RPC stream| G
+    E -->|RPC stream| G
 
     G -->|WebSocket stream| F
     U -->|Browser interaction| F
-    F -->|REST control API| G
-    G -->|SetAlive / SubmitCommand (gRPC)| Cluster
+    F -->|Control API| G
+    G -->|Control RPCs| A
+    G -->|Control RPCs| B
+    G -->|Control RPCs| C
+    G -->|Control RPCs| D
+    G -->|Control RPCs| E
 ```
 
 ## 2) Container / Component Diagram
@@ -169,21 +173,21 @@ classDiagram
 
 ```mermaid
 flowchart TD
-    M[Incoming WS message] --> T{message.type == rpc?}
+    M[Incoming WS message] --> T{RPC message}
     T -- No --> S[Apply state event]
     S --> R[RaftStateReconstructor.applyEvent]
     R --> UI1[Render nodes/roles/timers]
 
-    T -- Yes --> D[Direction gate: SEND only]
+    T -- Yes --> D[Direction gate SEND only]
     D --> K[Dedupe by rpc_id]
     K --> RT{rpc_type}
 
     RT -- APPEND_ENTRIES --> HB[Add heartbeat packet]
     HB --> ARR{Packet arrived?}
-    ARR -- Yes --> HR[applyHeartbeat(to_node)]
+    ARR -- Yes --> HR["applyHeartbeat to_node"]
     HR --> UI1
 
-    RT -- PRE_VOTE / PRE_VOTE_REPLY --> PM[Animate pre-vote packets]
+    RT -- PRE_VOTE and PRE_VOTE_REPLY --> PM[Animate pre-vote packets]
     PM --> UI2[Render packet trail]
 
     RT -- REQUEST_VOTE --> RV[Animate request vote packet]
@@ -235,4 +239,3 @@ flowchart TD
 
     K -- No --> N[Check websocket connectivity and replay state]
 ```
-
