@@ -119,6 +119,25 @@ Add transient message and election-ledger models:
 - Split-vote scenario shows multiple candidates without false leader animation.
 - Reconnect does not duplicate old vote animations.
 
+## Replay Troubleshooting
+If vote animations do not reconstruct correctly from backend events, validate in this order:
+
+1. Backend event payload contract
+- Each vote RPC includes `rpc_id`, `term`, and `candidate_id`.
+- Each `VOTE_REPLY` includes explicit `vote_granted` (`true` or `false`).
+- `direction` is either omitted or canonicalized to `SEND` for pushed events.
+
+2. Gateway passthrough
+- WebSocket payload for `type=rpc` forwards `rpc_id`, `term`, `candidate_id`,
+  `vote_granted`, and `direction` unchanged.
+- Gateway does not infer election results or mutate vote semantics.
+
+3. Frontend dedupe and tally
+- `rpc_id` is the primary dedupe key; fallback dedupe is only for legacy payloads
+  without `rpc_id`.
+- Vote tally updates happen from `VOTE_REPLY`, not inferred follower `voted_for`.
+- Split vote stays `collecting` until quorum is reached by explicit replies.
+
 ## Non-Goals
 - No backend control-plane simulation from frontend.
 - No synthetic/random vote outcomes generated in UI.

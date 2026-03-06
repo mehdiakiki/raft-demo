@@ -604,6 +604,122 @@ describe('vote flow visualization', () => {
             voteGranted: false,
         });
     });
+
+    it('keeps split elections in collecting state when no candidate reaches quorum', () => {
+        const { result } = renderHook(() => useRaft());
+        act(() => { FakeWebSocket.instances[0].simulateOpen(); });
+        act(() => {
+            FakeWebSocket.instances[0].simulateMessage(makeEvent({
+                node_id: 'A',
+                state: 'CANDIDATE',
+                current_term: 9,
+                voted_for: 'A',
+                event_time_ms: 9000,
+            }));
+            FakeWebSocket.instances[0].simulateMessage(makeEvent({
+                node_id: 'C',
+                state: 'CANDIDATE',
+                current_term: 9,
+                voted_for: 'C',
+                event_time_ms: 9005,
+            }));
+            FakeWebSocket.instances[0].simulateMessage(makeEvent({
+                node_id: 'B',
+                state: 'FOLLOWER',
+                current_term: 9,
+                event_time_ms: 9010,
+            }));
+            FakeWebSocket.instances[0].simulateMessage(makeEvent({
+                node_id: 'D',
+                state: 'FOLLOWER',
+                current_term: 9,
+                event_time_ms: 9015,
+            }));
+
+            FakeWebSocket.instances[0].simulateMessage({
+                type: 'rpc',
+                from_node: 'B',
+                to_node: 'A',
+                rpc_type: 'VOTE_REPLY',
+                rpc_id: 'rv:reply:9:B:A',
+                term: 9,
+                candidate_id: 'A',
+                vote_granted: true,
+                direction: 'SEND',
+                event_time_ms: 9020,
+            });
+            FakeWebSocket.instances[0].simulateMessage({
+                type: 'rpc',
+                from_node: 'D',
+                to_node: 'C',
+                rpc_type: 'VOTE_REPLY',
+                rpc_id: 'rv:reply:9:D:C',
+                term: 9,
+                candidate_id: 'C',
+                vote_granted: true,
+                direction: 'SEND',
+                event_time_ms: 9025,
+            });
+        });
+
+        expect(result.current.voteTallies['A']).toMatchObject({
+            candidateId: 'A',
+            term: 9,
+            granted: 2,
+            quorum: 3,
+            status: 'collecting',
+        });
+        expect(result.current.voteTallies['C']).toMatchObject({
+            candidateId: 'C',
+            term: 9,
+            granted: 2,
+            quorum: 3,
+            status: 'collecting',
+        });
+    });
+
+    it('does not duplicate replayed vote packets after websocket reconnect when rpc_id is reused', () => {
+        const { result } = renderHook(() => useRaft());
+        act(() => { FakeWebSocket.instances[0].simulateOpen(); });
+        act(() => { result.current.setMessageSpeed(1); });
+
+        act(() => {
+            FakeWebSocket.instances[0].simulateMessage({
+                type: 'rpc',
+                from_node: 'A',
+                to_node: 'B',
+                rpc_type: 'REQUEST_VOTE',
+                rpc_id: 'rv:req:11:A:B',
+                term: 11,
+                candidate_id: 'A',
+                direction: 'SEND',
+                event_time_ms: 11_000,
+            });
+        });
+        expect(result.current.messages).toHaveLength(1);
+
+        act(() => {
+            FakeWebSocket.instances[0].simulateClose();
+            vi.advanceTimersByTime(1100);
+            FakeWebSocket.instances[1].simulateOpen();
+        });
+
+        act(() => {
+            FakeWebSocket.instances[1].simulateMessage({
+                type: 'rpc',
+                from_node: 'A',
+                to_node: 'B',
+                rpc_type: 'REQUEST_VOTE',
+                rpc_id: 'rv:req:11:A:B',
+                term: 11,
+                candidate_id: 'A',
+                direction: 'SEND',
+                event_time_ms: 11_050,
+            });
+        });
+
+        expect(result.current.messages).toHaveLength(1);
+    });
 });
 
 // ── 6. Reset ──────────────────────────────────────────────────────────────────
