@@ -384,7 +384,7 @@ describe('heartbeats visualization', () => {
         expect(result.current.heartbeats.length).toBeLessThan(before);
     });
 
-    it('resets follower timeout cycle when APPEND_ENTRIES arrives', () => {
+    it('resets follower timeout cycle only when heartbeat reaches follower', () => {
         const { result } = renderHook(() => useRaft());
         act(() => { FakeWebSocket.instances[0].simulateOpen(); });
         act(() => {
@@ -398,6 +398,7 @@ describe('heartbeats visualization', () => {
 
         act(() => { vi.advanceTimersByTime(500); });
         expect(result.current.nodes['B'].electionTimer).toBeGreaterThan(0);
+        const beforeStart = result.current.nodes['B'].electionStartedAt;
 
         act(() => {
             FakeWebSocket.instances[0].simulateMessage({
@@ -409,8 +410,14 @@ describe('heartbeats visualization', () => {
             });
         });
 
-        expect(result.current.nodes['B'].electionTimer).toBe(0);
-        expect(result.current.nodes['B'].electionStartedAt).toBe(2000);
+        // Send-time should not reset follower timeout immediately.
+        expect(result.current.nodes['B'].electionStartedAt).toBe(beforeStart);
+        expect(result.current.nodes['B'].electionTimer).toBeGreaterThan(0);
+
+        // Reset occurs when the animated heartbeat reaches the follower.
+        act(() => { vi.advanceTimersByTime(1100); });
+        expect(result.current.nodes['B'].electionTimer).toBeLessThan(250);
+        expect(result.current.nodes['B'].electionStartedAt).toBeGreaterThan(beforeStart);
     });
 
     it('ignores non-heartbeat RPCs for timeout reset', () => {

@@ -193,6 +193,7 @@ export function useRaft() {
   const seenRpcIDsRef = useRef<Map<string, number>>(new Map());
   const fallbackRpcSeenRef = useRef<Map<string, number>>(new Map());
   const voteLedgerRef = useRef<Map<string, VoteLedgerEntry>>(new Map());
+  const heartbeatsRef = useRef<HeartbeatMsg[]>([]);
 
   const isDuplicateRPC = useCallback((rpcEvent: RpcEventPayload): boolean => {
     const eventTimeMs = toMs(rpcEvent.event_time_ms);
@@ -348,22 +349,17 @@ export function useRaft() {
           }
 
           if (rpcType === "APPEND_ENTRIES") {
-            setHeartbeats((prev) => [
-              ...prev,
+            const nextHeartbeats = [
+              ...heartbeatsRef.current,
               {
                 id: rpcEvent.rpc_id?.trim() || `hb-${rpcEvent.from_node}-${rpcEvent.to_node}-${toMs(rpcEvent.event_time_ms)}`,
                 from: rpcEvent.from_node,
                 to: rpcEvent.to_node,
                 progress: 0,
               },
-            ]);
-
-            reconstructorRef.current.applyHeartbeat(
-              rpcEvent.to_node,
-              rpcEvent.event_time_ms,
-            );
-            const snapshot = reconstructorRef.current.getNodes();
-            setNodes((prev) => mergeRealtimeNodeState(prev, snapshot));
+            ];
+            heartbeatsRef.current = nextHeartbeats;
+            setHeartbeats(nextHeartbeats);
             return;
           }
 
@@ -501,11 +497,27 @@ export function useRaft() {
         0.2,
         0.05 * (0.02 / Math.max(0.005, messageSpeed)),
       );
-      setHeartbeats((prev) =>
-        prev
-          .map((h) => ({ ...h, progress: h.progress + 0.05 }))
-          .filter((h) => h.progress < 1),
-      );
+      const arrivedFollowers = new Set<string>();
+      const nextHeartbeats: HeartbeatMsg[] = [];
+      for (const hb of heartbeatsRef.current) {
+        const nextProgress = hb.progress + messageStep;
+        if (nextProgress >= 1) {
+          arrivedFollowers.add(hb.to);
+          continue;
+        }
+        nextHeartbeats.push({ ...hb, progress: nextProgress });
+      }
+      heartbeatsRef.current = nextHeartbeats;
+      setHeartbeats(nextHeartbeats);
+
+      if (arrivedFollowers.size > 0) {
+        const arrivalTime = Date.now();
+        for (const followerID of arrivedFollowers) {
+          reconstructorRef.current.applyHeartbeat(followerID, arrivalTime);
+        }
+        const snapshot = reconstructorRef.current.getNodes();
+        setNodes((prev) => mergeRealtimeNodeState(prev, snapshot, arrivalTime));
+      }
       setMessages((prev) =>
         prev
           .map((m) => ({ ...m, progress: m.progress + messageStep }))
@@ -632,6 +644,7 @@ export function useRaft() {
           suppressReconnectOnCloseRef.current = true;
           wsRef.current.close();
         }
+        heartbeatsRef.current = [];
         setMessages([]);
         setHeartbeats([]);
         setVoteTallies({});
@@ -664,6 +677,7 @@ export function useRaft() {
       }
       shouldReconnectRef.current = true;
       setStatus("connecting");
+      heartbeatsRef.current = [];
       setMessages([]);
       setHeartbeats([]);
       setVoteTallies({});
