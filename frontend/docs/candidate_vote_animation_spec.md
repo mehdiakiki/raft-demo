@@ -13,11 +13,13 @@ Result: elections work, but the election process is not visually realistic.
 
 ## Desired UX
 During an election:
-1. Candidate sends `REQUEST_VOTE` packets to peers.
-2. Peers return `VOTE_REPLY` packets.
-3. Candidate shows live vote tally (`x / quorum`).
-4. Quorum reached triggers a short "elected" pulse, then leader state.
-5. Split vote or rejection remains visible (no fake instant leader).
+1. Candidate sends `PRE_VOTE` packets to peers.
+2. Peers return `PRE_VOTE_REPLY` packets.
+3. Candidate then sends `REQUEST_VOTE` packets to peers.
+4. Peers return `VOTE_REPLY` packets.
+5. Candidate shows live vote tally (`x / quorum`) from real vote replies.
+6. Quorum reached triggers a short "elected" pulse, then leader state.
+7. Split vote or rejection remains visible (no fake instant leader).
 
 ## Data Contract Requirements
 To make vote animation accurate (not guessed), RPC events must include election metadata.
@@ -26,7 +28,7 @@ To make vote animation accurate (not guessed), RPC events must include election 
 - `event_time_ms`
 - `from_node`
 - `to_node`
-- `rpc_type` (at least `REQUEST_VOTE`, `VOTE_REPLY`)
+- `rpc_type` (at least `PRE_VOTE`, `PRE_VOTE_REPLY`, `REQUEST_VOTE`, `VOTE_REPLY`)
 - `term`
 - `candidate_id` (for replies, explicit target election candidate)
 - `vote_granted` (boolean, for `VOTE_REPLY`)
@@ -64,6 +66,9 @@ Add transient message and election-ledger models:
 
 ## Animation Behavior
 ### Packet colors
+- `PRE_VOTE`: blue/cyan
+- `PRE_VOTE_REPLY` granted: cyan
+- `PRE_VOTE_REPLY` denied: orange/red
 - `REQUEST_VOTE`: yellow
 - `VOTE_REPLY` granted: bright yellow/amber
 - `VOTE_REPLY` denied: red/orange

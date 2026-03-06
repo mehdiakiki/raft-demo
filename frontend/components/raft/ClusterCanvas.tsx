@@ -148,7 +148,10 @@ function nodePowerButtonClass(isDead: boolean): string {
 }
 
 function rpcMessageClass(message: LegacyMessage): string {
-  if (message.type === 'VOTE_REPLY' && message.voteGranted === false) {
+  if (
+    (message.type === 'VOTE_REPLY' || message.type === 'PRE_VOTE_REPLY') &&
+    message.voteGranted === false
+  ) {
     return cn(PACKET_DOT(), VOTE_REPLY_DENIED_PACKET_CLASS);
   }
   return cn(PACKET_DOT(), MSG_COLORS[message.type]);

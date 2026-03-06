@@ -446,6 +446,82 @@ describe('heartbeats visualization', () => {
 // ── 5. Vote flow visualization ───────────────────────────────────────────────
 
 describe('vote flow visualization', () => {
+    it('creates PRE_VOTE packet animations from explicit RPC events', () => {
+        const { result } = renderHook(() => useRaft());
+        act(() => { FakeWebSocket.instances[0].simulateOpen(); });
+        act(() => {
+            FakeWebSocket.instances[0].simulateMessage({
+                type: 'rpc',
+                from_node: 'A',
+                to_node: 'B',
+                rpc_type: 'PRE_VOTE',
+                rpc_id: 'pv:req:4:A:B',
+                term: 4,
+                candidate_id: 'A',
+                direction: 'SEND',
+                event_time_ms: 3900,
+            });
+        });
+
+        const preVote = result.current.messages.find((m) => m.id === 'pv:req:4:A:B');
+        expect(preVote).toMatchObject({
+            type: 'PRE_VOTE',
+            from: 'A',
+            to: 'B',
+        });
+    });
+
+    it('renders PRE_VOTE_REPLY but does not change real vote tally', () => {
+        const { result } = renderHook(() => useRaft());
+        act(() => { FakeWebSocket.instances[0].simulateOpen(); });
+        act(() => {
+            FakeWebSocket.instances[0].simulateMessage(makeEvent({
+                node_id: 'A',
+                state: 'CANDIDATE',
+                current_term: 4,
+                event_time_ms: 3950,
+            }));
+            FakeWebSocket.instances[0].simulateMessage(makeEvent({
+                node_id: 'B',
+                state: 'FOLLOWER',
+                current_term: 4,
+                event_time_ms: 3955,
+            }));
+            FakeWebSocket.instances[0].simulateMessage(makeEvent({
+                node_id: 'C',
+                state: 'FOLLOWER',
+                current_term: 4,
+                event_time_ms: 3958,
+            }));
+            FakeWebSocket.instances[0].simulateMessage({
+                type: 'rpc',
+                from_node: 'B',
+                to_node: 'A',
+                rpc_type: 'PRE_VOTE_REPLY',
+                rpc_id: 'pv:reply:4:B:A',
+                term: 4,
+                candidate_id: 'A',
+                vote_granted: false,
+                direction: 'SEND',
+                event_time_ms: 3960,
+            });
+        });
+
+        const preVoteReply = result.current.messages.find((m) => m.id === 'pv:reply:4:B:A');
+        expect(preVoteReply).toMatchObject({
+            type: 'PRE_VOTE_REPLY',
+            voteGranted: false,
+            from: 'B',
+            to: 'A',
+        });
+
+        expect(result.current.voteTallies['A']).toMatchObject({
+            granted: 1,
+            rejected: 0,
+            status: 'collecting',
+        });
+    });
+
     it('creates REQUEST_VOTE packet animations from explicit RPC events', () => {
         const { result } = renderHook(() => useRaft());
         act(() => { FakeWebSocket.instances[0].simulateOpen(); });

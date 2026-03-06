@@ -23,6 +23,8 @@ export interface HeartbeatMsg {
 }
 
 export type LegacyMessageType =
+  | "PRE_VOTE"
+  | "PRE_VOTE_REPLY"
   | "REQUEST_VOTE"
   | "VOTE_REPLY"
   | "APPEND_ENTRIES"
@@ -377,6 +379,37 @@ export function useRaft() {
               rpcEvent.to_node,
               rpcEvent.event_time_ms,
               rpcEvent.rpc_id,
+            );
+            return;
+          }
+
+          if (rpcType === "PRE_VOTE") {
+            enqueueMessage(
+              "PRE_VOTE",
+              rpcEvent.from_node,
+              rpcEvent.to_node,
+              rpcEvent.event_time_ms,
+              rpcEvent.rpc_id,
+            );
+            return;
+          }
+
+          if (rpcType === "PRE_VOTE_REPLY") {
+            const candidateID = rpcEvent.candidate_id?.trim();
+            const target = candidateID && candidateID.length > 0
+              ? candidateID
+              : rpcEvent.to_node;
+            const voteGranted = typeof rpcEvent.vote_granted === "boolean"
+              ? rpcEvent.vote_granted
+              : undefined;
+
+            enqueueMessage(
+              "PRE_VOTE_REPLY",
+              rpcEvent.from_node,
+              target,
+              rpcEvent.event_time_ms,
+              rpcEvent.rpc_id,
+              voteGranted,
             );
             return;
           }
