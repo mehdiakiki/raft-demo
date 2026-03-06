@@ -4,3 +4,4 @@ frontend/coverage/
 .cache/
 *.log
 .DS_Store
+/gateway
