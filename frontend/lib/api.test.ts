@@ -1,12 +1,5 @@
-// Tests for the gateway API client (lib/api.ts).
-//
-// In event-sourcing mode, most REST endpoints are unavailable.
-// We verify that:
-//   - Functions throw appropriate errors when called
-//   - fetchClusterState returns an empty response (placeholder)
-
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { fetchClusterState, submitCommand, killNode, restartNode } from './api';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { fetchClusterState, killNode, restartNode, submitCommand } from './api';
 
 function mockFetch(body: unknown, status = 200) {
   return vi.fn().mockResolvedValue({
@@ -18,26 +11,74 @@ function mockFetch(body: unknown, status = 200) {
 }
 
 describe('submitCommand', () => {
-  it('throws error in event-sourcing mode', async () => {
-    await expect(submitCommand('SET x=1', 'client-1', 42)).rejects.toThrow(
-      'submitCommand not available in event-sourcing mode'
-    );
+  beforeEach(() => {
+    vi.stubGlobal('fetch', mockFetch({
+      success: true,
+      leader_id: 'A',
+      duplicate: false,
+      committed: true,
+      result: '',
+      routed_node: 'A',
+    }));
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('POSTs /api/commands and returns gateway response', async () => {
+    const result = await submitCommand('{"op":"set","key":"x","value":"1"}', 'client-1', 42, 'A');
+
+    const [url, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit];
+    expect(url).toMatch(/\/api\/commands$/);
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(String(init.body))).toEqual({
+      command: '{"op":"set","key":"x","value":"1"}',
+      client_id: 'client-1',
+      sequence_num: 42,
+      leader_id: 'A',
+    });
+    expect(result.success).toBe(true);
+    expect(result.leader_id).toBe('A');
+    expect(result.duplicate).toBe(false);
+    expect(result.committed).toBe(true);
+    expect(result.result).toBe('');
+    expect(result.routed_node).toBe('A');
+  });
+
+  it('throws on non-2xx responses', async () => {
+    vi.stubGlobal('fetch', mockFetch('bad gateway', 502));
+    await expect(submitCommand('x', 'c', 1)).rejects.toThrow('submitCommand: HTTP 502');
   });
 });
 
 describe('killNode', () => {
-  it('throws error in event-sourcing mode', async () => {
-    await expect(killNode('A')).rejects.toThrow(
-      'killNode not available in event-sourcing mode'
-    );
+  beforeEach(() => {
+    vi.stubGlobal('fetch', mockFetch({ node_id: 'A', alive: false }));
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('POSTs /api/nodes/{id}/kill', async () => {
+    const result = await killNode('A');
+    const [url, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit];
+    expect(url).toMatch(/\/api\/nodes\/A\/kill$/);
+    expect(init.method).toBe('POST');
+    expect(result).toEqual({ node_id: 'A', alive: false });
   });
 });
 
 describe('restartNode', () => {
-  it('throws error in event-sourcing mode', async () => {
-    await expect(restartNode('A')).rejects.toThrow(
-      'restartNode not available in event-sourcing mode'
-    );
+  beforeEach(() => {
+    vi.stubGlobal('fetch', mockFetch({ node_id: 'A', alive: true }));
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('POSTs /api/nodes/{id}/restart', async () => {
+    const result = await restartNode('A');
+    const [url, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit];
+    expect(url).toMatch(/\/api\/nodes\/A\/restart$/);
+    expect(init.method).toBe('POST');
+    expect(result).toEqual({ node_id: 'A', alive: true });
   });
 });
 
@@ -45,6 +86,7 @@ describe('fetchClusterState', () => {
   beforeEach(() => {
     vi.stubGlobal('fetch', mockFetch({ status: 'ok' }));
   });
+
   afterEach(() => vi.unstubAllGlobals());
 
   it('calls /health endpoint and returns empty nodes array', async () => {
@@ -58,6 +100,6 @@ describe('fetchClusterState', () => {
 
   it('throws on non-2xx responses', async () => {
     vi.stubGlobal('fetch', mockFetch('gateway unavailable', 503));
-    await expect(fetchClusterState()).rejects.toThrow('HTTP 503');
+    await expect(fetchClusterState()).rejects.toThrow('fetchClusterState: HTTP 503');
   });
 });

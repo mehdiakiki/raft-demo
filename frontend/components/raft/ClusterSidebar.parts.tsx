@@ -450,7 +450,7 @@ function ClusterNodeCard({ id, node, voteTally }: ClusterNodeCardProps) {
           <span className="text-slate-400">VOTES (T{voteTally.term})</span>
           <div className="flex items-center gap-2">
             <span className={NODE_CANDIDATE_TALLY_VALUE_CLASS}>
-              {voteTally.granted}/{voteTally.quorum}
+              {voteTally.granted}/{voteTally.quorum} (-{voteTally.rejected})
             </span>
             <span className={NODE_CANDIDATE_TALLY_STATUS_CLASS({ tone: voteTally.status })}>
               {voteTally.status}

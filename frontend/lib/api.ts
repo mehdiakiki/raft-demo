@@ -1,7 +1,7 @@
-// Package api is a thin client for the Raft gateway.
+// Package api is a thin HTTP client for gateway control endpoints.
 //
-// In event-sourcing mode, most operations are read-only via WebSocket.
-// This module retains types for compatibility and future gRPC-web integration.
+// State telemetry is streamed via WebSocket. Control actions (kill/restart,
+// submit command) go through gateway REST endpoints which proxy to Raft nodes.
 
 import { gatewayBaseURL } from "@/lib/config";
 
@@ -11,6 +11,7 @@ export interface CommandResult {
   duplicate: boolean;
   committed?: boolean;
   result?: string;
+  routed_node?: string;
 }
 
 export interface SetAliveResult {
@@ -22,8 +23,29 @@ export interface ClusterStateResponse {
   nodes: Array<{ node_id: string; state?: string; error?: string }>;
 }
 
-// NOTE: REST endpoints were removed in the event-sourcing refactor.
-// The following functions are now implemented via gateway proxy to nodes.
+export async function submitCommand(
+  command: string,
+  clientID: string,
+  sequenceNum: number,
+  leaderID?: string,
+): Promise<CommandResult> {
+  const res = await fetch(`${gatewayBaseURL}/api/commands`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      command,
+      client_id: clientID,
+      sequence_num: sequenceNum,
+      leader_id: leaderID ?? '',
+    }),
+  });
+
+  if (!res.ok) {
+    throw new Error(`submitCommand: HTTP ${res.status}`);
+  }
+
+  return res.json();
+}
 
 export async function killNode(nodeID: string): Promise<SetAliveResult> {
   const res = await fetch(`${gatewayBaseURL}/api/nodes/${nodeID}/kill`, {

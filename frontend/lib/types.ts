@@ -51,6 +51,7 @@ export interface CommandResult {
   duplicate: boolean;
   committed?: boolean;
   result?: string;
+  routed_node?: string;
 }
 
 export interface SetAliveResult {

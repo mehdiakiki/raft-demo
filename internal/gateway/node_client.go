@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -95,6 +96,97 @@ func (m NodeClientMap) KillNode(nodeID string, alive bool) error {
 	return nil
 }
 
+func (m NodeClientMap) SubmitCommand(preferredNodeID string, req *pb.SubmitCommandRequest) (*pb.SubmitCommandReply, string, error) {
+	if len(m) == 0 {
+		return nil, "", fmt.Errorf("no nodes configured")
+	}
+	if req == nil || strings.TrimSpace(req.Command) == "" {
+		return nil, "", fmt.Errorf("command is required")
+	}
+
+	queue := m.orderedNodeIDs(preferredNodeID)
+	tried := make(map[string]bool, len(queue))
+
+	var lastReply *pb.SubmitCommandReply
+	var lastNode string
+	var lastErr error
+
+	for len(queue) > 0 {
+		nodeID := queue[0]
+		queue = queue[1:]
+		if tried[nodeID] {
+			continue
+		}
+		tried[nodeID] = true
+
+		reply, err := m.submitCommandToNode(nodeID, req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		lastReply = reply
+		lastNode = nodeID
+		if reply.Success {
+			return reply, nodeID, nil
+		}
+
+		leaderHint := strings.TrimSpace(reply.LeaderId)
+		if leaderHint != "" && !tried[leaderHint] {
+			if _, ok := m[leaderHint]; ok {
+				// Try leader redirect immediately.
+				queue = append([]string{leaderHint}, queue...)
+			}
+		}
+	}
+
+	if lastReply != nil {
+		return lastReply, lastNode, nil
+	}
+	if lastErr != nil {
+		return nil, "", lastErr
+	}
+	return &pb.SubmitCommandReply{Success: false}, "", nil
+}
+
+func (m NodeClientMap) submitCommandToNode(nodeID string, req *pb.SubmitCommandRequest) (*pb.SubmitCommandReply, error) {
+	client, ok := m[nodeID]
+	if !ok {
+		return nil, fmt.Errorf("node %s not found", nodeID)
+	}
+
+	if err := client.connect(); err != nil {
+		return nil, err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	reply, err := client.client.SubmitCommand(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("SubmitCommand RPC failed on %s: %w", nodeID, err)
+	}
+	return reply, nil
+}
+
+func (m NodeClientMap) orderedNodeIDs(preferredNodeID string) []string {
+	ids := make([]string, 0, len(m))
+	for nodeID := range m {
+		if nodeID == preferredNodeID {
+			continue
+		}
+		ids = append(ids, nodeID)
+	}
+	sort.Strings(ids)
+
+	if preferredNodeID == "" {
+		return ids
+	}
+	if _, ok := m[preferredNodeID]; ok {
+		return append([]string{preferredNodeID}, ids...)
+	}
+	return ids
+}
+
 func (m NodeClientMap) Close() {
 	for _, client := range m {
 		client.mu.Lock()
@@ -140,5 +232,55 @@ func (s *StateReceiver) ServeKillNode(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]any{
 		"node_id": nodeID,
 		"alive":   req.Alive,
+	})
+}
+
+func (s *StateReceiver) ServeSubmitCommand(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 64*1024)
+	var req struct {
+		Command     string `json:"command"`
+		ClientID    string `json:"client_id"`
+		SequenceNum int64  `json:"sequence_num"`
+		LeaderID    string `json:"leader_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	req.Command = strings.TrimSpace(req.Command)
+	if req.Command == "" {
+		http.Error(w, "command is required", http.StatusBadRequest)
+		return
+	}
+
+	if s.NodeClients == nil || len(s.NodeClients) == 0 {
+		http.Error(w, "node clients not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	reply, routedNode, err := s.NodeClients.SubmitCommand(strings.TrimSpace(req.LeaderID), &pb.SubmitCommandRequest{
+		Command:     req.Command,
+		ClientId:    req.ClientID,
+		SequenceNum: req.SequenceNum,
+	})
+	if err != nil {
+		slog.Error("submit command failed", "leader_hint", req.LeaderID, "err", err)
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"success":     reply.Success,
+		"leader_id":   reply.LeaderId,
+		"duplicate":   reply.Duplicate,
+		"committed":   reply.Committed,
+		"result":      reply.Result,
+		"routed_node": routedNode,
 	})
 }

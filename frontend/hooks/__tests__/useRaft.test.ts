@@ -446,7 +446,7 @@ describe('heartbeats visualization', () => {
 // ── 5. Vote flow visualization ───────────────────────────────────────────────
 
 describe('vote flow visualization', () => {
-    it('creates REQUEST_VOTE packet animations from RPC events', () => {
+    it('creates REQUEST_VOTE packet animations from explicit RPC events', () => {
         const { result } = renderHook(() => useRaft());
         act(() => { FakeWebSocket.instances[0].simulateOpen(); });
         act(() => {
@@ -455,19 +455,24 @@ describe('vote flow visualization', () => {
                 from_node: 'A',
                 to_node: 'B',
                 rpc_type: 'REQUEST_VOTE',
+                rpc_id: 'rv:req:4:A:B',
+                term: 4,
+                candidate_id: 'A',
+                direction: 'SEND',
                 event_time_ms: 4000,
             });
         });
 
         expect(result.current.messages).toHaveLength(1);
         expect(result.current.messages[0]).toMatchObject({
+            id: 'rv:req:4:A:B',
             from: 'A',
             to: 'B',
             type: 'REQUEST_VOTE',
         });
     });
 
-    it('deduplicates duplicate vote RPC packets emitted by send/receive observers', () => {
+    it('deduplicates duplicate vote RPC packets by rpc_id', () => {
         const { result } = renderHook(() => useRaft());
         act(() => { FakeWebSocket.instances[0].simulateOpen(); });
         act(() => {
@@ -476,6 +481,9 @@ describe('vote flow visualization', () => {
                 from_node: 'A',
                 to_node: 'C',
                 rpc_type: 'REQUEST_VOTE',
+                rpc_id: 'rv:req:5:A:C',
+                term: 5,
+                direction: 'SEND',
                 event_time_ms: 5000,
             });
             FakeWebSocket.instances[0].simulateMessage({
@@ -483,6 +491,9 @@ describe('vote flow visualization', () => {
                 from_node: 'A',
                 to_node: 'C',
                 rpc_type: 'REQUEST_VOTE',
+                rpc_id: 'rv:req:5:A:C',
+                term: 5,
+                direction: 'SEND',
                 event_time_ms: 5060,
             });
         });
@@ -490,24 +501,34 @@ describe('vote flow visualization', () => {
         expect(result.current.messages).toHaveLength(1);
     });
 
-    it('infers VOTE_REPLY packets from voted_for state changes', () => {
+    it('ignores receive-direction duplicates when direction metadata is provided', () => {
         const { result } = renderHook(() => useRaft());
         act(() => { FakeWebSocket.instances[0].simulateOpen(); });
         act(() => {
-            FakeWebSocket.instances[0].simulateMessage(makeEvent({
-                node_id: 'A',
-                state: 'CANDIDATE',
-                current_term: 2,
-                voted_for: 'A',
+            FakeWebSocket.instances[0].simulateMessage({
+                type: 'rpc',
+                from_node: 'B',
+                to_node: 'A',
+                rpc_type: 'VOTE_REPLY',
+                rpc_id: 'rv:reply:6:B:A',
+                term: 6,
+                candidate_id: 'A',
+                vote_granted: true,
+                direction: 'RECEIVE',
                 event_time_ms: 6000,
-            }));
-            FakeWebSocket.instances[0].simulateMessage(makeEvent({
-                node_id: 'B',
-                state: 'FOLLOWER',
-                current_term: 2,
-                voted_for: 'A',
-                event_time_ms: 6050,
-            }));
+            });
+            FakeWebSocket.instances[0].simulateMessage({
+                type: 'rpc',
+                from_node: 'B',
+                to_node: 'A',
+                rpc_type: 'VOTE_REPLY',
+                rpc_id: 'rv:reply:6:B:A',
+                term: 6,
+                candidate_id: 'A',
+                vote_granted: true,
+                direction: 'SEND',
+                event_time_ms: 6010,
+            });
         });
 
         const voteReply = result.current.messages.find((m) => m.type === 'VOTE_REPLY');
@@ -519,7 +540,7 @@ describe('vote flow visualization', () => {
         });
     });
 
-    it('tracks candidate vote tallies from replayed state', () => {
+    it('tracks candidate vote tallies from explicit vote replies', () => {
         const { result } = renderHook(() => useRaft());
         act(() => { FakeWebSocket.instances[0].simulateOpen(); });
         act(() => {
@@ -534,7 +555,6 @@ describe('vote flow visualization', () => {
                 node_id: 'B',
                 state: 'FOLLOWER',
                 current_term: 3,
-                voted_for: 'A',
                 event_time_ms: 7050,
             }));
             FakeWebSocket.instances[0].simulateMessage(makeEvent({
@@ -543,14 +563,45 @@ describe('vote flow visualization', () => {
                 current_term: 3,
                 event_time_ms: 7100,
             }));
+            FakeWebSocket.instances[0].simulateMessage({
+                type: 'rpc',
+                from_node: 'B',
+                to_node: 'A',
+                rpc_type: 'VOTE_REPLY',
+                rpc_id: 'rv:reply:3:B:A',
+                term: 3,
+                candidate_id: 'A',
+                vote_granted: true,
+                direction: 'SEND',
+                event_time_ms: 7150,
+            });
+            FakeWebSocket.instances[0].simulateMessage({
+                type: 'rpc',
+                from_node: 'C',
+                to_node: 'A',
+                rpc_type: 'VOTE_REPLY',
+                rpc_id: 'rv:reply:3:C:A',
+                term: 3,
+                candidate_id: 'A',
+                vote_granted: false,
+                direction: 'SEND',
+                event_time_ms: 7200,
+            });
         });
 
         expect(result.current.voteTallies['A']).toMatchObject({
             candidateId: 'A',
             term: 3,
             granted: 2,
+            rejected: 1,
             quorum: 2,
             status: 'quorum',
+        });
+
+        const deniedReply = result.current.messages.find((m) => m.id === 'rv:reply:3:C:A');
+        expect(deniedReply).toMatchObject({
+            type: 'VOTE_REPLY',
+            voteGranted: false,
         });
     });
 });

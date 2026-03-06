@@ -157,6 +157,27 @@ describe('RaftStateReconstructor', () => {
       expect(nodes['node-B'].state).toBe('FOLLOWER');
       expect(nodes['node-B'].leaderId).toBe('node-A');
     });
+
+    it('keeps a brief candidate visual on direct follower-to-leader promotion', () => {
+      reconstructor.applyEvent({
+        node_id: 'node-1',
+        state: 'FOLLOWER',
+        current_term: 1,
+        event_time_ms: 1000,
+      });
+
+      reconstructor.applyEvent({
+        node_id: 'node-1',
+        state: 'LEADER',
+        current_term: 2,
+        event_time_ms: 1200,
+      });
+
+      const node = reconstructor.getNodes()['node-1'];
+      expect(node.actualState).toBe('LEADER');
+      expect(node.state).toBe('CANDIDATE');
+      expect(node.candidateHoldUntil).toBeGreaterThan(Date.now());
+    });
   });
 
   describe('getEventLog', () => {
@@ -258,6 +279,60 @@ describe('RaftStateReconstructor', () => {
 
       expect(nodes['node-1'].electionTimeout).toBe(5000);
       expect(nodes['node-1'].heartbeatInterval).toBe(1000);
+    });
+  });
+
+  describe('applyHeartbeat', () => {
+    it('resets a follower timeout cycle on heartbeat receipt', () => {
+      reconstructor.applyEvent({
+        node_id: 'node-1',
+        state: 'FOLLOWER',
+        current_term: 3,
+        event_time_ms: 1000,
+      });
+
+      const before = reconstructor.getNodes();
+      before['node-1'].electionTimer = 750;
+      before['node-1'].electionStartedAt = 1000;
+
+      reconstructor.applyHeartbeat('node-1', 2500);
+      const after = reconstructor.getNodes();
+
+      expect(after['node-1'].electionTimer).toBe(0);
+      expect(after['node-1'].electionStartedAt).toBe(2500);
+    });
+
+    it('does not reset leaders on heartbeat receipt', () => {
+      reconstructor.applyEvent({
+        node_id: 'node-1',
+        state: 'LEADER',
+        current_term: 3,
+        event_time_ms: 1000,
+      });
+
+      const before = reconstructor.getNodes();
+      before['node-1'].electionStartedAt = 1000;
+
+      reconstructor.applyHeartbeat('node-1', 2500);
+      const after = reconstructor.getNodes();
+
+      expect(after['node-1'].electionStartedAt).toBe(1000);
+    });
+
+    it('clears candidate visual hold when heartbeat confirms follower', () => {
+      reconstructor.applyEvent({
+        node_id: 'node-1',
+        state: 'CANDIDATE',
+        current_term: 3,
+        event_time_ms: 1000,
+      });
+
+      reconstructor.applyHeartbeat('node-1', 2500);
+      const after = reconstructor.getNodes();
+
+      expect(after['node-1'].state).toBe('FOLLOWER');
+      expect(after['node-1'].actualState).toBe('FOLLOWER');
+      expect(after['node-1'].candidateHoldUntil).toBe(0);
     });
   });
 });

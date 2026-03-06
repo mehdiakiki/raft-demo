@@ -71,6 +71,8 @@ const CONTROLS_PANEL_CLASS = RAFT_SURFACE({
   padding: 'compact',
   radius: 'xxl',
 });
+const REPLAY_MODE_HINT_CLASS =
+  'text-[10px] font-mono uppercase tracking-widest text-slate-500';
 
 function controlButtonClass(variant: ControlButtonVariant): string {
   return RAFT_CONTROL_BUTTON({ tone: variant });
@@ -136,6 +138,7 @@ export function ClusterControls({
   setIsRunning,
   setMessageSpeed,
 }: ClusterControlsProps) {
+  const backendControlEnabled = false;
   const latencyPercent = Math.round(
     ((NETWORK_LATENCY_INVERT_BASE - messageSpeed) / NETWORK_LATENCY_SLIDER_MAX) * NETWORK_LATENCY_PERCENT_SCALE,
   );
@@ -155,16 +158,22 @@ export function ClusterControls({
           step={NETWORK_LATENCY_SLIDER_STEP}
           value={NETWORK_LATENCY_INVERT_BASE - messageSpeed}
           onChange={(e) => setMessageSpeed(NETWORK_LATENCY_INVERT_BASE - parseFloat(e.target.value))}
-          className={LATENCY_SLIDER_CLASS}
+          className={cn(LATENCY_SLIDER_CLASS, !backendControlEnabled && 'opacity-40 cursor-not-allowed')}
           aria-valuemin={NETWORK_LATENCY_SLIDER_MIN}
           aria-valuemax={NETWORK_LATENCY_SLIDER_MAX}
           aria-valuenow={NETWORK_LATENCY_INVERT_BASE - messageSpeed}
           aria-valuetext={`${latencyPercent}%`}
+          disabled={!backendControlEnabled}
         />
         <span className={LATENCY_PERCENT_CLASS}>
           {latencyPercent}%
         </span>
       </div>
+      {!backendControlEnabled && (
+        <div className={REPLAY_MODE_HINT_CLASS}>
+          Replay mode: backend controls are disabled.
+        </div>
+      )}
 
       <div className={CONTROLS_PANEL_CLASS}>
         <button
@@ -172,9 +181,10 @@ export function ClusterControls({
           onClick={() => setIsRunning(!isRunning)}
           className={controlButtonClass(isRunning ? 'running' : 'paused')}
           aria-pressed={isRunning}
+          title={isRunning ? 'Disconnect frontend stream' : 'Connect frontend stream'}
         >
           {isRunning ? <Pause size={16} /> : <Play size={16} />}
-          {isRunning ? 'PAUSE' : 'START'}
+          {isRunning ? 'DISCONNECT FE' : 'CONNECT FE'}
         </button>
         <div className={CONTROL_PANEL_DIVIDER_CLASS}></div>
         <button
@@ -182,18 +192,21 @@ export function ClusterControls({
           onClick={() => setChaosMode(!chaosMode)}
           className={controlButtonClass(chaosMode ? 'chaosOn' : 'chaosOff')}
           aria-pressed={chaosMode}
+          disabled={!backendControlEnabled}
+          title="Not available in replay mode"
         >
           <Flame size={16} className={chaosMode ? 'motion-safe:animate-pulse motion-reduce:animate-none' : ''} />
-          CHAOS MONKEY
+          CHAOS N/A
         </button>
         <div className={CONTROL_PANEL_DIVIDER_CLASS}></div>
         <button
           type="button"
           onClick={reset}
           className={controlButtonClass('neutral')}
+          title="Reconnect frontend stream"
         >
           <RotateCcw size={16} />
-          RESET
+          RECONNECT
         </button>
       </div>
     </div>
