@@ -41,8 +41,16 @@ export interface CandidateVoteTally {
   candidateId: string;
   term: number;
   granted: number;
+  rejected: number;
   quorum: number;
   status: "collecting" | "quorum";
+}
+
+interface VoteLedgerEntry {
+  candidateId: string;
+  term: number;
+  grantedBy: Set<string>;
+  rejectedBy: Set<string>;
 }
 
 interface RpcEventPayload {
@@ -55,6 +63,7 @@ interface RpcEventPayload {
   term?: string | number;
   candidate_id?: string;
   rpc_id?: string;
+  direction?: string;
 }
 
 function isTimedRole(state: NodeState): boolean {
@@ -66,8 +75,13 @@ function toMs(value: string | number | undefined): number {
   return Number.isFinite(parsed) ? parsed : Date.now();
 }
 
+function voteLedgerKey(candidateId: string, term: number): string {
+  return `${candidateId}:${term}`;
+}
+
 function buildVoteTallies(
   nodes: Record<string, RaftNode>,
+  ledger: Map<string, VoteLedgerEntry>,
 ): Record<string, CandidateVoteTally> {
   const tallies: Record<string, CandidateVoteTally> = {};
   const nodeCount = Math.max(1, Object.keys(nodes).length);
@@ -78,23 +92,35 @@ function buildVoteTallies(
       continue;
     }
 
-    let granted = 0;
-    for (const voter of Object.values(nodes)) {
-      if (voter.votedFor === id && voter.term === node.term) {
-        granted += 1;
-      }
+    const entry = ledger.get(voteLedgerKey(id, node.term));
+    const grantedBy = new Set(entry?.grantedBy ?? []);
+    const rejectedBy = new Set(entry?.rejectedBy ?? []);
+    if (node.votedFor === id) {
+      grantedBy.add(id);
     }
+
+    const granted = grantedBy.size;
+    const rejected = rejectedBy.size;
 
     tallies[id] = {
       candidateId: id,
       term: node.term,
       granted,
+      rejected,
       quorum,
       status: granted >= quorum ? "quorum" : "collecting",
     };
   }
 
   return tallies;
+}
+
+function pruneSeenMap(store: Map<string, number>, cutoff: number): void {
+  for (const [key, ts] of store.entries()) {
+    if (ts < cutoff) {
+      store.delete(key);
+    }
+  }
 }
 
 function mergeRealtimeNodeState(
@@ -155,6 +181,7 @@ export function useRaft() {
   const [messages, setMessages] = useState<LegacyMessage[]>([]);
   const [messageSpeed, setMessageSpeed] = useState(0.02);
   const [voteTallies, setVoteTallies] = useState<Record<string, CandidateVoteTally>>({});
+  const [voteLedgerVersion, setVoteLedgerVersion] = useState(0);
 
   const reconstructorRef = useRef(new RaftStateReconstructor());
   const wsRef = useRef<WebSocket | null>(null);
@@ -164,8 +191,92 @@ export function useRaft() {
   const suppressReconnectOnCloseRef = useRef(false);
   const clientIDRef = useRef(createClientID());
   const clientSequenceRef = useRef(0);
-  const lastRpcSeenRef = useRef<Map<string, number>>(new Map());
-  const voteTrackerRef = useRef<Map<string, { term: number; votedFor: string }>>(new Map());
+  const seenRpcIDsRef = useRef<Map<string, number>>(new Map());
+  const fallbackRpcSeenRef = useRef<Map<string, number>>(new Map());
+  const voteLedgerRef = useRef<Map<string, VoteLedgerEntry>>(new Map());
+
+  const isDuplicateRPC = useCallback((rpcEvent: RpcEventPayload): boolean => {
+    const eventTimeMs = toMs(rpcEvent.event_time_ms);
+    const rpcID = rpcEvent.rpc_id?.trim();
+    if (rpcID && rpcID.length > 0) {
+      if (seenRpcIDsRef.current.has(rpcID)) {
+        return true;
+      }
+      seenRpcIDsRef.current.set(rpcID, eventTimeMs);
+      if (seenRpcIDsRef.current.size > 1024) {
+        pruneSeenMap(seenRpcIDsRef.current, eventTimeMs - 30_000);
+      }
+      return false;
+    }
+
+    const fallbackKey = `${rpcEvent.rpc_type}|${rpcEvent.from_node}|${rpcEvent.to_node}|${rpcEvent.candidate_id ?? ""}|${String(rpcEvent.vote_granted ?? "na")}`;
+    const lastSeen = fallbackRpcSeenRef.current.get(fallbackKey);
+    if (lastSeen !== undefined && Math.abs(eventTimeMs - lastSeen) <= 200) {
+      return true;
+    }
+
+    fallbackRpcSeenRef.current.set(fallbackKey, eventTimeMs);
+    if (fallbackRpcSeenRef.current.size > 1024) {
+      pruneSeenMap(fallbackRpcSeenRef.current, eventTimeMs - 30_000);
+    }
+    return false;
+  }, []);
+
+  const upsertVoteLedger = useCallback(
+    (
+      candidateId: string,
+      term: number,
+      voterId: string,
+      voteGranted?: boolean,
+    ) => {
+      if (!candidateId || !Number.isFinite(term)) {
+        return;
+      }
+
+      const key = voteLedgerKey(candidateId, term);
+      const existing = voteLedgerRef.current.get(key) ?? {
+        candidateId,
+        term,
+        grantedBy: new Set<string>(),
+        rejectedBy: new Set<string>(),
+      };
+
+      if (voteGranted === true) {
+        existing.grantedBy.add(voterId);
+        existing.rejectedBy.delete(voterId);
+      } else if (voteGranted === false) {
+        existing.rejectedBy.add(voterId);
+        existing.grantedBy.delete(voterId);
+      }
+
+      voteLedgerRef.current.set(key, existing);
+      setVoteLedgerVersion((prev) => prev + 1);
+    },
+    [],
+  );
+
+  const seedCandidateSelfVote = useCallback((candidateId: string, term: number) => {
+    if (!candidateId || !Number.isFinite(term)) {
+      return;
+    }
+    for (const [key, entry] of voteLedgerRef.current.entries()) {
+      if (entry.candidateId === candidateId && entry.term < term) {
+        voteLedgerRef.current.delete(key);
+      }
+    }
+    const key = voteLedgerKey(candidateId, term);
+    const existing = voteLedgerRef.current.get(key) ?? {
+      candidateId,
+      term,
+      grantedBy: new Set<string>(),
+      rejectedBy: new Set<string>(),
+    };
+    if (!existing.grantedBy.has(candidateId)) {
+      existing.grantedBy.add(candidateId);
+      voteLedgerRef.current.set(key, existing);
+      setVoteLedgerVersion((prev) => prev + 1);
+    }
+  }, []);
 
   const enqueueMessage = useCallback(
     (
@@ -173,31 +284,17 @@ export function useRaft() {
       from: string,
       to: string,
       eventTime: string | number | undefined,
+      rpcID?: string,
       voteGranted?: boolean,
     ) => {
       const eventTimeMs = toMs(eventTime);
-      const dedupeKey = `${type}|${from}|${to}|${voteGranted === undefined ? "na" : String(voteGranted)}`;
-      const dedupeWindowMs = type === "APPEND_ENTRIES" ? 120 : 200;
-      const lastSeen = lastRpcSeenRef.current.get(dedupeKey);
-
-      if (lastSeen !== undefined && Math.abs(eventTimeMs - lastSeen) <= dedupeWindowMs) {
-        return;
-      }
-
-      lastRpcSeenRef.current.set(dedupeKey, eventTimeMs);
-      if (lastRpcSeenRef.current.size > 512) {
-        const cutoff = eventTimeMs - 10_000;
-        for (const [key, ts] of lastRpcSeenRef.current.entries()) {
-          if (ts < cutoff) {
-            lastRpcSeenRef.current.delete(key);
-          }
-        }
-      }
-
+      const stableID = rpcID?.trim();
       setMessages((prev) => [
         ...prev,
         {
-          id: `${type}-${from}-${to}-${eventTimeMs}-${Math.random().toString(16).slice(2)}`,
+          id: stableID && stableID.length > 0
+            ? stableID
+            : `${type}-${from}-${to}-${eventTimeMs}-${Math.random().toString(16).slice(2)}`,
           from,
           to,
           type,
@@ -207,37 +304,6 @@ export function useRaft() {
       ]);
     },
     [],
-  );
-
-  const trackVoteAndEmitReply = useCallback(
-    (stateEvent: RaftStateEvent) => {
-      const nodeID = stateEvent.node_id;
-      const previous = voteTrackerRef.current.get(nodeID) ?? { term: 0, votedFor: "" };
-      const term = Number(stateEvent.current_term ?? previous.term);
-      const hasVotedForField = Object.prototype.hasOwnProperty.call(stateEvent, "voted_for");
-      let votedFor = previous.votedFor;
-
-      if (hasVotedForField) {
-        votedFor = (stateEvent.voted_for ?? "").trim();
-      } else if (Number.isFinite(term) && term > previous.term) {
-        votedFor = "";
-      }
-
-      const shouldEmitGrant =
-        votedFor.length > 0 &&
-        votedFor !== nodeID &&
-        (votedFor !== previous.votedFor || term !== previous.term);
-
-      if (shouldEmitGrant) {
-        enqueueMessage("VOTE_REPLY", nodeID, votedFor, stateEvent.event_time_ms, true);
-      }
-
-      voteTrackerRef.current.set(nodeID, {
-        term: Number.isFinite(term) ? term : previous.term,
-        votedFor,
-      });
-    },
-    [enqueueMessage],
   );
 
   const connect = useCallback(() => {
@@ -266,12 +332,19 @@ export function useRaft() {
         if (payload.type === "rpc" && payload.from_node && payload.to_node) {
           const rpcEvent = payload as RpcEventPayload;
           const rpcType = String(rpcEvent.rpc_type || "");
+          const direction = rpcEvent.direction?.trim().toUpperCase();
+          if (direction && direction !== "SEND") {
+            return;
+          }
+          if (isDuplicateRPC(rpcEvent)) {
+            return;
+          }
 
           if (rpcType === "APPEND_ENTRIES") {
             setHeartbeats((prev) => [
               ...prev,
               {
-                id: `hb-${rpcEvent.from_node}-${rpcEvent.to_node}-${toMs(rpcEvent.event_time_ms)}`,
+                id: rpcEvent.rpc_id?.trim() || `hb-${rpcEvent.from_node}-${rpcEvent.to_node}-${toMs(rpcEvent.event_time_ms)}`,
                 from: rpcEvent.from_node,
                 to: rpcEvent.to_node,
                 progress: 0,
@@ -288,11 +361,17 @@ export function useRaft() {
           }
 
           if (rpcType === "REQUEST_VOTE") {
+            const candidateID = rpcEvent.candidate_id?.trim() || rpcEvent.from_node;
+            const term = Number(rpcEvent.term);
+            if (Number.isFinite(term) && candidateID.length > 0) {
+              seedCandidateSelfVote(candidateID, term);
+            }
             enqueueMessage(
               "REQUEST_VOTE",
               rpcEvent.from_node,
               rpcEvent.to_node,
               rpcEvent.event_time_ms,
+              rpcEvent.rpc_id,
             );
             return;
           }
@@ -302,14 +381,22 @@ export function useRaft() {
             const target = candidateID && candidateID.length > 0
               ? candidateID
               : rpcEvent.to_node;
+            const term = Number(rpcEvent.term);
+            const voteGranted = typeof rpcEvent.vote_granted === "boolean"
+              ? rpcEvent.vote_granted
+              : undefined;
 
             enqueueMessage(
               "VOTE_REPLY",
               rpcEvent.from_node,
               target,
               rpcEvent.event_time_ms,
-              rpcEvent.vote_granted,
+              rpcEvent.rpc_id,
+              voteGranted,
             );
+            if (Number.isFinite(term) && target.length > 0) {
+              upsertVoteLedger(target, term, rpcEvent.from_node, voteGranted);
+            }
             return;
           }
 
@@ -320,7 +407,12 @@ export function useRaft() {
         const stateEvent = payload as RaftStateEvent;
         if (!stateEvent.node_id) return;
 
-        trackVoteAndEmitReply(stateEvent);
+        if (stateEvent.state === "CANDIDATE") {
+          const term = Number(stateEvent.current_term);
+          if (Number.isFinite(term)) {
+            seedCandidateSelfVote(stateEvent.node_id, term);
+          }
+        }
         reconstructorRef.current.applyEvent(stateEvent);
         const snapshot = reconstructorRef.current.getNodes();
         setNodes((prev) => mergeRealtimeNodeState(prev, snapshot));
@@ -350,7 +442,7 @@ export function useRaft() {
       setStatus("reconnecting");
       reconnectTimerRef.current = setTimeout(connect, 1000);
     };
-  }, [enqueueMessage, trackVoteAndEmitReply]);
+  }, [enqueueMessage, isDuplicateRPC, seedCandidateSelfVote, upsertVoteLedger]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -386,8 +478,8 @@ export function useRaft() {
   }, [messageSpeed]);
 
   useEffect(() => {
-    setVoteTallies(buildVoteTallies(nodes));
-  }, [nodes]);
+    setVoteTallies(buildVoteTallies(nodes, voteLedgerRef.current));
+  }, [nodes, voteLedgerVersion]);
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -504,8 +596,11 @@ export function useRaft() {
         }
         setMessages([]);
         setHeartbeats([]);
-        voteTrackerRef.current.clear();
-        lastRpcSeenRef.current.clear();
+        setVoteTallies({});
+        setVoteLedgerVersion(0);
+        voteLedgerRef.current.clear();
+        seenRpcIDsRef.current.clear();
+        fallbackRpcSeenRef.current.clear();
         setStatus("disconnected");
         setIsRunningState(false);
       }
@@ -533,8 +628,11 @@ export function useRaft() {
       setStatus("connecting");
       setMessages([]);
       setHeartbeats([]);
-      voteTrackerRef.current.clear();
-      lastRpcSeenRef.current.clear();
+      setVoteTallies({});
+      setVoteLedgerVersion(0);
+      voteLedgerRef.current.clear();
+      seenRpcIDsRef.current.clear();
+      fallbackRpcSeenRef.current.clear();
       connect();
     },
     messageSpeed,

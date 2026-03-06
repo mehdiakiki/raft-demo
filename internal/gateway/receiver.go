@@ -25,6 +25,7 @@ func (s *StateReceiver) PushState(ctx context.Context, event *pb.RaftStateEvent)
 		"time_ms", event.EventTimeMs,
 	)
 
+	s.Hub.CacheState(event.NodeId, event)
 	s.Hub.Broadcast(event)
 
 	return &pb.PushStateAck{Received: true}, nil
@@ -49,6 +50,19 @@ func (s *StateReceiver) PushRpc(ctx context.Context, event *pb.RaftRpcEvent) (*p
 		"to_node":       event.ToNode,
 		"rpc_type":      event.RpcType,
 		"event_time_ms": event.EventTimeMs,
+		"rpc_id":        event.RpcId,
+	}
+	if event.Term != nil {
+		msg["term"] = *event.Term
+	}
+	if event.CandidateId != nil {
+		msg["candidate_id"] = *event.CandidateId
+	}
+	if event.VoteGranted != nil {
+		msg["vote_granted"] = *event.VoteGranted
+	}
+	if event.Direction != nil {
+		msg["direction"] = *event.Direction
 	}
 	s.Hub.Broadcast(msg)
 
