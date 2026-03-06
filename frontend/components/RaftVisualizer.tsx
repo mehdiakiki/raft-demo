@@ -11,7 +11,6 @@ import { ConnectionOverlay } from './raft/ConnectionOverlay';
 import { getNodePosition, NODE_IDS, type NodePositions } from './raft/constants';
 
 interface ClusterLayoutProps {
-  chaosMode: boolean;
   commandStatus: CommandDispatchStatus;
   commandInput: string;
   connectionStatus: ReturnType<typeof useRaft>['status'];
@@ -24,7 +23,6 @@ interface ClusterLayoutProps {
   voteTallies: ReturnType<typeof useRaft>['voteTallies'];
   onSubmit: (e: FormEvent<HTMLFormElement>) => void;
   reset: () => void;
-  setChaosMode: (enabled: boolean) => void;
   setCommandInput: (value: string) => void;
   setIsRunning: (running: boolean) => void;
   setMessageSpeed: (speed: number) => void;
@@ -67,7 +65,7 @@ function commandSubmitReadiness(
     };
   }
   if (!isRunning) {
-    return { canSubmit: false, leaderID: null, reason: 'Frontend stream is disconnected. Connect FE before submitting commands.' };
+    return { canSubmit: false, leaderID: null, reason: 'Live stream is disconnected. Press Connect before submitting commands.' };
   }
 
   const leaderEntry = Object.entries(nodes).find(([, node]) => node.actualState === 'LEADER' && !node.stale);
@@ -86,7 +84,6 @@ function toErrorMessage(error: unknown): string {
 }
 
 function ClusterLayout({
-  chaosMode,
   commandStatus,
   commandInput,
   connectionStatus,
@@ -99,7 +96,6 @@ function ClusterLayout({
   voteTallies,
   onSubmit,
   reset,
-  setChaosMode,
   setCommandInput,
   setIsRunning,
   setMessageSpeed,
@@ -118,8 +114,6 @@ function ClusterLayout({
         reset={reset}
         messageSpeed={messageSpeed}
         setMessageSpeed={setMessageSpeed}
-        chaosMode={chaosMode}
-        setChaosMode={setChaosMode}
       />
 
       <ClusterSidebar
@@ -150,8 +144,6 @@ export default function RaftVisualizer() {
     reset,
     messageSpeed,
     setMessageSpeed,
-    chaosMode,
-    setChaosMode,
   } = useRaft();
 
   const [commandInput, setCommandInput] = useState('');
@@ -225,7 +217,6 @@ export default function RaftVisualizer() {
 
   return (
     <ClusterLayout
-      chaosMode={chaosMode}
       commandStatus={commandStatus}
       commandInput={commandInput}
       connectionStatus={status}
@@ -238,7 +229,6 @@ export default function RaftVisualizer() {
       voteTallies={voteTallies}
       onSubmit={handleSend}
       reset={reset}
-      setChaosMode={setChaosMode}
       setCommandInput={setCommandInput}
       setIsRunning={setIsRunning}
       setMessageSpeed={setMessageSpeed}

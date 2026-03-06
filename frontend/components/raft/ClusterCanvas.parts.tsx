@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import { cn } from '@/lib/utils';
-import { Activity, Database, Flame, Gauge, Pause, Play, RotateCcw } from 'lucide-react';
+import { Activity, Database, Gauge, Pause, Play, RotateCcw } from 'lucide-react';
 import {
   CENTER,
   NETWORK_LATENCY_INVERT_BASE,
@@ -21,16 +21,14 @@ export interface ClusterStageProps {
 }
 
 export interface ClusterControlsProps {
-  chaosMode: boolean;
   isRunning: boolean;
   messageSpeed: number;
   reset: () => void;
-  setChaosMode: (enabled: boolean) => void;
   setIsRunning: (running: boolean) => void;
   setMessageSpeed: (speed: number) => void;
 }
 
-type ControlButtonVariant = 'running' | 'paused' | 'chaosOn' | 'chaosOff' | 'neutral';
+type ControlButtonVariant = 'running' | 'paused' | 'neutral';
 
 export const CANVAS_ROOT_CLASS = 'flex-1 flex flex-col items-center justify-center p-8 relative overflow-hidden';
 export const CANVAS_GRID_CLASS =
@@ -71,8 +69,6 @@ const CONTROLS_PANEL_CLASS = RAFT_SURFACE({
   padding: 'compact',
   radius: 'xxl',
 });
-const REPLAY_MODE_HINT_CLASS =
-  'text-[10px] font-mono uppercase tracking-widest text-slate-500';
 
 function controlButtonClass(variant: ControlButtonVariant): string {
   return RAFT_CONTROL_BUTTON({ tone: variant });
@@ -130,15 +126,12 @@ export function ClusterStage({ nodePositions, children }: ClusterStageProps) {
 }
 
 export function ClusterControls({
-  chaosMode,
   isRunning,
   messageSpeed,
   reset,
-  setChaosMode,
   setIsRunning,
   setMessageSpeed,
 }: ClusterControlsProps) {
-  const chaosControlEnabled = false;
   const latencyPercent = Math.round(
     ((NETWORK_LATENCY_INVERT_BASE - messageSpeed) / NETWORK_LATENCY_SLIDER_MAX) * NETWORK_LATENCY_PERCENT_SCALE,
   );
@@ -168,11 +161,6 @@ export function ClusterControls({
           {latencyPercent}%
         </span>
       </div>
-      {!chaosControlEnabled && (
-        <div className={REPLAY_MODE_HINT_CLASS}>
-          Chaos mode is unavailable in replay mode.
-        </div>
-      )}
 
       <div className={CONTROLS_PANEL_CLASS}>
         <button
@@ -184,18 +172,6 @@ export function ClusterControls({
         >
           {isRunning ? <Pause size={16} /> : <Play size={16} />}
           {isRunning ? 'DISCONNECT' : 'CONNECT'}
-        </button>
-        <div className={CONTROL_PANEL_DIVIDER_CLASS}></div>
-        <button
-          type="button"
-          onClick={() => setChaosMode(!chaosMode)}
-          className={controlButtonClass(chaosMode ? 'chaosOn' : 'chaosOff')}
-          aria-pressed={chaosMode}
-          disabled={!chaosControlEnabled}
-          title="Not available in replay mode"
-        >
-          <Flame size={16} className={chaosMode ? 'motion-safe:animate-pulse motion-reduce:animate-none' : ''} />
-          CHAOS MODE
         </button>
         <div className={CONTROL_PANEL_DIVIDER_CLASS}></div>
         <button
