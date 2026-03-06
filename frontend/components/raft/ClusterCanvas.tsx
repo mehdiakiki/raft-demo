@@ -32,8 +32,6 @@ interface ClusterCanvasProps {
   reset: () => void;
   messageSpeed: number;
   setMessageSpeed: (speed: number) => void;
-  chaosMode: boolean;
-  setChaosMode: (enabled: boolean) => void;
 }
 
 type NodeIconTone = 'dead' | 'stale' | 'default';
@@ -148,7 +146,10 @@ function nodePowerButtonClass(isDead: boolean): string {
 }
 
 function rpcMessageClass(message: LegacyMessage): string {
-  if (message.type === 'VOTE_REPLY' && message.voteGranted === false) {
+  if (
+    (message.type === 'VOTE_REPLY' || message.type === 'PRE_VOTE_REPLY') &&
+    message.voteGranted === false
+  ) {
     return cn(PACKET_DOT(), VOTE_REPLY_DENIED_PACKET_CLASS);
   }
   return cn(PACKET_DOT(), MSG_COLORS[message.type]);
@@ -181,8 +182,6 @@ export function ClusterCanvas({
   reset,
   messageSpeed,
   setMessageSpeed,
-  chaosMode,
-  setChaosMode,
 }: ClusterCanvasProps) {
   return (
     <div className={CANVAS_ROOT_CLASS}>
@@ -329,11 +328,9 @@ export function ClusterCanvas({
       </ClusterStage>
 
       <ClusterControls
-        chaosMode={chaosMode}
         isRunning={isRunning}
         messageSpeed={messageSpeed}
         reset={reset}
-        setChaosMode={setChaosMode}
         setIsRunning={setIsRunning}
         setMessageSpeed={setMessageSpeed}
       />

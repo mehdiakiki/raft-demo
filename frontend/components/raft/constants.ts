@@ -31,6 +31,8 @@ export const STATE_COLORS: Record<NodeState, string> = {
 
 // MSG_COLORS maps legacy RPC animation type to pulse color.
 export const MSG_COLORS: Record<LegacyMessageType, string> = {
+  PRE_VOTE: 'bg-sky-500 shadow-[0_0_10px_rgba(14,165,233,0.5)]',
+  PRE_VOTE_REPLY: 'bg-cyan-300 shadow-[0_0_8px_rgba(103,232,249,0.5)]',
   REQUEST_VOTE: 'bg-yellow-500 shadow-[0_0_10px_rgba(234,179,8,0.5)]',
   VOTE_REPLY: 'bg-yellow-300 shadow-[0_0_8px_rgba(253,224,71,0.5)]',
   APPEND_ENTRIES: 'bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.5)]',

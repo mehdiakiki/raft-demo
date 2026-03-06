@@ -23,6 +23,8 @@ export interface HeartbeatMsg {
 }
 
 export type LegacyMessageType =
+  | "PRE_VOTE"
+  | "PRE_VOTE_REPLY"
   | "REQUEST_VOTE"
   | "VOTE_REPLY"
   | "APPEND_ENTRIES"
@@ -95,9 +97,6 @@ function buildVoteTallies(
     const entry = ledger.get(voteLedgerKey(id, node.term));
     const grantedBy = new Set(entry?.grantedBy ?? []);
     const rejectedBy = new Set(entry?.rejectedBy ?? []);
-    if (node.votedFor === id) {
-      grantedBy.add(id);
-    }
 
     const granted = grantedBy.size;
     const rejected = rejectedBy.size;
@@ -194,6 +193,7 @@ export function useRaft() {
   const seenRpcIDsRef = useRef<Map<string, number>>(new Map());
   const fallbackRpcSeenRef = useRef<Map<string, number>>(new Map());
   const voteLedgerRef = useRef<Map<string, VoteLedgerEntry>>(new Map());
+  const heartbeatsRef = useRef<HeartbeatMsg[]>([]);
 
   const isDuplicateRPC = useCallback((rpcEvent: RpcEventPayload): boolean => {
     const eventTimeMs = toMs(rpcEvent.event_time_ms);
@@ -209,9 +209,17 @@ export function useRaft() {
       return false;
     }
 
-    const fallbackKey = `${rpcEvent.rpc_type}|${rpcEvent.from_node}|${rpcEvent.to_node}|${rpcEvent.candidate_id ?? ""}|${String(rpcEvent.vote_granted ?? "na")}`;
-    const lastSeen = fallbackRpcSeenRef.current.get(fallbackKey);
-    if (lastSeen !== undefined && Math.abs(eventTimeMs - lastSeen) <= 200) {
+    // Legacy payload fallback (no rpc_id): dedupe deterministically by event identity.
+    const fallbackKey = [
+      rpcEvent.rpc_type,
+      rpcEvent.from_node,
+      rpcEvent.to_node,
+      rpcEvent.candidate_id ?? "",
+      String(rpcEvent.vote_granted ?? "na"),
+      String(rpcEvent.term ?? "na"),
+      String(eventTimeMs),
+    ].join("|");
+    if (fallbackRpcSeenRef.current.has(fallbackKey)) {
       return true;
     }
 
@@ -341,22 +349,17 @@ export function useRaft() {
           }
 
           if (rpcType === "APPEND_ENTRIES") {
-            setHeartbeats((prev) => [
-              ...prev,
+            const nextHeartbeats = [
+              ...heartbeatsRef.current,
               {
                 id: rpcEvent.rpc_id?.trim() || `hb-${rpcEvent.from_node}-${rpcEvent.to_node}-${toMs(rpcEvent.event_time_ms)}`,
                 from: rpcEvent.from_node,
                 to: rpcEvent.to_node,
                 progress: 0,
               },
-            ]);
-
-            reconstructorRef.current.applyHeartbeat(
-              rpcEvent.to_node,
-              rpcEvent.event_time_ms,
-            );
-            const snapshot = reconstructorRef.current.getNodes();
-            setNodes((prev) => mergeRealtimeNodeState(prev, snapshot));
+            ];
+            heartbeatsRef.current = nextHeartbeats;
+            setHeartbeats(nextHeartbeats);
             return;
           }
 
@@ -372,6 +375,37 @@ export function useRaft() {
               rpcEvent.to_node,
               rpcEvent.event_time_ms,
               rpcEvent.rpc_id,
+            );
+            return;
+          }
+
+          if (rpcType === "PRE_VOTE") {
+            enqueueMessage(
+              "PRE_VOTE",
+              rpcEvent.from_node,
+              rpcEvent.to_node,
+              rpcEvent.event_time_ms,
+              rpcEvent.rpc_id,
+            );
+            return;
+          }
+
+          if (rpcType === "PRE_VOTE_REPLY") {
+            const candidateID = rpcEvent.candidate_id?.trim();
+            const target = candidateID && candidateID.length > 0
+              ? candidateID
+              : rpcEvent.to_node;
+            const voteGranted = typeof rpcEvent.vote_granted === "boolean"
+              ? rpcEvent.vote_granted
+              : undefined;
+
+            enqueueMessage(
+              "PRE_VOTE_REPLY",
+              rpcEvent.from_node,
+              target,
+              rpcEvent.event_time_ms,
+              rpcEvent.rpc_id,
+              voteGranted,
             );
             return;
           }
@@ -463,11 +497,27 @@ export function useRaft() {
         0.2,
         0.05 * (0.02 / Math.max(0.005, messageSpeed)),
       );
-      setHeartbeats((prev) =>
-        prev
-          .map((h) => ({ ...h, progress: h.progress + 0.05 }))
-          .filter((h) => h.progress < 1),
-      );
+      const arrivedFollowers = new Set<string>();
+      const nextHeartbeats: HeartbeatMsg[] = [];
+      for (const hb of heartbeatsRef.current) {
+        const nextProgress = hb.progress + messageStep;
+        if (nextProgress >= 1) {
+          arrivedFollowers.add(hb.to);
+          continue;
+        }
+        nextHeartbeats.push({ ...hb, progress: nextProgress });
+      }
+      heartbeatsRef.current = nextHeartbeats;
+      setHeartbeats(nextHeartbeats);
+
+      if (arrivedFollowers.size > 0) {
+        const arrivalTime = Date.now();
+        for (const followerID of arrivedFollowers) {
+          reconstructorRef.current.applyHeartbeat(followerID, arrivalTime);
+        }
+        const snapshot = reconstructorRef.current.getNodes();
+        setNodes((prev) => mergeRealtimeNodeState(prev, snapshot, arrivalTime));
+      }
       setMessages((prev) =>
         prev
           .map((m) => ({ ...m, progress: m.progress + messageStep }))
@@ -594,6 +644,7 @@ export function useRaft() {
           suppressReconnectOnCloseRef.current = true;
           wsRef.current.close();
         }
+        heartbeatsRef.current = [];
         setMessages([]);
         setHeartbeats([]);
         setVoteTallies({});
@@ -626,6 +677,7 @@ export function useRaft() {
       }
       shouldReconnectRef.current = true;
       setStatus("connecting");
+      heartbeatsRef.current = [];
       setMessages([]);
       setHeartbeats([]);
       setVoteTallies({});

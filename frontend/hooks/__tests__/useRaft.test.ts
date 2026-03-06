@@ -384,7 +384,7 @@ describe('heartbeats visualization', () => {
         expect(result.current.heartbeats.length).toBeLessThan(before);
     });
 
-    it('resets follower timeout cycle when APPEND_ENTRIES arrives', () => {
+    it('resets follower timeout cycle only when heartbeat reaches follower', () => {
         const { result } = renderHook(() => useRaft());
         act(() => { FakeWebSocket.instances[0].simulateOpen(); });
         act(() => {
@@ -398,6 +398,7 @@ describe('heartbeats visualization', () => {
 
         act(() => { vi.advanceTimersByTime(500); });
         expect(result.current.nodes['B'].electionTimer).toBeGreaterThan(0);
+        const beforeStart = result.current.nodes['B'].electionStartedAt;
 
         act(() => {
             FakeWebSocket.instances[0].simulateMessage({
@@ -409,8 +410,14 @@ describe('heartbeats visualization', () => {
             });
         });
 
-        expect(result.current.nodes['B'].electionTimer).toBe(0);
-        expect(result.current.nodes['B'].electionStartedAt).toBe(2000);
+        // Send-time should not reset follower timeout immediately.
+        expect(result.current.nodes['B'].electionStartedAt).toBe(beforeStart);
+        expect(result.current.nodes['B'].electionTimer).toBeGreaterThan(0);
+
+        // Reset occurs when the animated heartbeat reaches the follower.
+        act(() => { vi.advanceTimersByTime(1100); });
+        expect(result.current.nodes['B'].electionTimer).toBeLessThan(250);
+        expect(result.current.nodes['B'].electionStartedAt).toBeGreaterThan(beforeStart);
     });
 
     it('ignores non-heartbeat RPCs for timeout reset', () => {
@@ -446,6 +453,82 @@ describe('heartbeats visualization', () => {
 // ── 5. Vote flow visualization ───────────────────────────────────────────────
 
 describe('vote flow visualization', () => {
+    it('creates PRE_VOTE packet animations from explicit RPC events', () => {
+        const { result } = renderHook(() => useRaft());
+        act(() => { FakeWebSocket.instances[0].simulateOpen(); });
+        act(() => {
+            FakeWebSocket.instances[0].simulateMessage({
+                type: 'rpc',
+                from_node: 'A',
+                to_node: 'B',
+                rpc_type: 'PRE_VOTE',
+                rpc_id: 'pv:req:4:A:B',
+                term: 4,
+                candidate_id: 'A',
+                direction: 'SEND',
+                event_time_ms: 3900,
+            });
+        });
+
+        const preVote = result.current.messages.find((m) => m.id === 'pv:req:4:A:B');
+        expect(preVote).toMatchObject({
+            type: 'PRE_VOTE',
+            from: 'A',
+            to: 'B',
+        });
+    });
+
+    it('renders PRE_VOTE_REPLY but does not change real vote tally', () => {
+        const { result } = renderHook(() => useRaft());
+        act(() => { FakeWebSocket.instances[0].simulateOpen(); });
+        act(() => {
+            FakeWebSocket.instances[0].simulateMessage(makeEvent({
+                node_id: 'A',
+                state: 'CANDIDATE',
+                current_term: 4,
+                event_time_ms: 3950,
+            }));
+            FakeWebSocket.instances[0].simulateMessage(makeEvent({
+                node_id: 'B',
+                state: 'FOLLOWER',
+                current_term: 4,
+                event_time_ms: 3955,
+            }));
+            FakeWebSocket.instances[0].simulateMessage(makeEvent({
+                node_id: 'C',
+                state: 'FOLLOWER',
+                current_term: 4,
+                event_time_ms: 3958,
+            }));
+            FakeWebSocket.instances[0].simulateMessage({
+                type: 'rpc',
+                from_node: 'B',
+                to_node: 'A',
+                rpc_type: 'PRE_VOTE_REPLY',
+                rpc_id: 'pv:reply:4:B:A',
+                term: 4,
+                candidate_id: 'A',
+                vote_granted: false,
+                direction: 'SEND',
+                event_time_ms: 3960,
+            });
+        });
+
+        const preVoteReply = result.current.messages.find((m) => m.id === 'pv:reply:4:B:A');
+        expect(preVoteReply).toMatchObject({
+            type: 'PRE_VOTE_REPLY',
+            voteGranted: false,
+            from: 'B',
+            to: 'A',
+        });
+
+        expect(result.current.voteTallies['A']).toMatchObject({
+            granted: 1,
+            rejected: 0,
+            status: 'collecting',
+        });
+    });
+
     it('creates REQUEST_VOTE packet animations from explicit RPC events', () => {
         const { result } = renderHook(() => useRaft());
         act(() => { FakeWebSocket.instances[0].simulateOpen(); });
@@ -603,6 +686,203 @@ describe('vote flow visualization', () => {
             type: 'VOTE_REPLY',
             voteGranted: false,
         });
+    });
+
+    it('does not infer granted replies from follower voted_for snapshots', () => {
+        const { result } = renderHook(() => useRaft());
+        act(() => { FakeWebSocket.instances[0].simulateOpen(); });
+        act(() => {
+            FakeWebSocket.instances[0].simulateMessage(makeEvent({
+                node_id: 'A',
+                state: 'CANDIDATE',
+                current_term: 4,
+                event_time_ms: 8000,
+            }));
+            FakeWebSocket.instances[0].simulateMessage(makeEvent({
+                node_id: 'B',
+                state: 'FOLLOWER',
+                current_term: 4,
+                voted_for: 'A',
+                event_time_ms: 8050,
+            }));
+            FakeWebSocket.instances[0].simulateMessage(makeEvent({
+                node_id: 'C',
+                state: 'FOLLOWER',
+                current_term: 4,
+                event_time_ms: 8100,
+            }));
+        });
+
+        // Only candidate self-vote should be present without explicit VOTE_REPLY.
+        expect(result.current.voteTallies['A']).toMatchObject({
+            candidateId: 'A',
+            term: 4,
+            granted: 1,
+            rejected: 0,
+            status: 'collecting',
+        });
+    });
+
+    it('keeps split elections in collecting state when no candidate reaches quorum', () => {
+        const { result } = renderHook(() => useRaft());
+        act(() => { FakeWebSocket.instances[0].simulateOpen(); });
+        act(() => {
+            FakeWebSocket.instances[0].simulateMessage(makeEvent({
+                node_id: 'A',
+                state: 'CANDIDATE',
+                current_term: 9,
+                voted_for: 'A',
+                event_time_ms: 9000,
+            }));
+            FakeWebSocket.instances[0].simulateMessage(makeEvent({
+                node_id: 'C',
+                state: 'CANDIDATE',
+                current_term: 9,
+                voted_for: 'C',
+                event_time_ms: 9005,
+            }));
+            FakeWebSocket.instances[0].simulateMessage(makeEvent({
+                node_id: 'B',
+                state: 'FOLLOWER',
+                current_term: 9,
+                event_time_ms: 9010,
+            }));
+            FakeWebSocket.instances[0].simulateMessage(makeEvent({
+                node_id: 'D',
+                state: 'FOLLOWER',
+                current_term: 9,
+                event_time_ms: 9015,
+            }));
+
+            FakeWebSocket.instances[0].simulateMessage({
+                type: 'rpc',
+                from_node: 'B',
+                to_node: 'A',
+                rpc_type: 'VOTE_REPLY',
+                rpc_id: 'rv:reply:9:B:A',
+                term: 9,
+                candidate_id: 'A',
+                vote_granted: true,
+                direction: 'SEND',
+                event_time_ms: 9020,
+            });
+            FakeWebSocket.instances[0].simulateMessage({
+                type: 'rpc',
+                from_node: 'D',
+                to_node: 'C',
+                rpc_type: 'VOTE_REPLY',
+                rpc_id: 'rv:reply:9:D:C',
+                term: 9,
+                candidate_id: 'C',
+                vote_granted: true,
+                direction: 'SEND',
+                event_time_ms: 9025,
+            });
+        });
+
+        expect(result.current.voteTallies['A']).toMatchObject({
+            candidateId: 'A',
+            term: 9,
+            granted: 2,
+            quorum: 3,
+            status: 'collecting',
+        });
+        expect(result.current.voteTallies['C']).toMatchObject({
+            candidateId: 'C',
+            term: 9,
+            granted: 2,
+            quorum: 3,
+            status: 'collecting',
+        });
+    });
+
+    it('does not duplicate replayed vote packets after websocket reconnect when rpc_id is reused', () => {
+        const { result } = renderHook(() => useRaft());
+        act(() => { FakeWebSocket.instances[0].simulateOpen(); });
+        act(() => { result.current.setMessageSpeed(1); });
+
+        act(() => {
+            FakeWebSocket.instances[0].simulateMessage({
+                type: 'rpc',
+                from_node: 'A',
+                to_node: 'B',
+                rpc_type: 'REQUEST_VOTE',
+                rpc_id: 'rv:req:11:A:B',
+                term: 11,
+                candidate_id: 'A',
+                direction: 'SEND',
+                event_time_ms: 11_000,
+            });
+        });
+        expect(result.current.messages).toHaveLength(1);
+
+        act(() => {
+            FakeWebSocket.instances[0].simulateClose();
+            vi.advanceTimersByTime(1100);
+            FakeWebSocket.instances[1].simulateOpen();
+        });
+
+        act(() => {
+            FakeWebSocket.instances[1].simulateMessage({
+                type: 'rpc',
+                from_node: 'A',
+                to_node: 'B',
+                rpc_type: 'REQUEST_VOTE',
+                rpc_id: 'rv:req:11:A:B',
+                term: 11,
+                candidate_id: 'A',
+                direction: 'SEND',
+                event_time_ms: 11_050,
+            });
+        });
+
+        expect(result.current.messages).toHaveLength(1);
+    });
+
+    it('uses deterministic fallback dedupe when rpc_id is missing', () => {
+        const { result } = renderHook(() => useRaft());
+        act(() => { FakeWebSocket.instances[0].simulateOpen(); });
+        act(() => { result.current.setMessageSpeed(1); });
+
+        act(() => {
+            FakeWebSocket.instances[0].simulateMessage({
+                type: 'rpc',
+                from_node: 'A',
+                to_node: 'D',
+                rpc_type: 'REQUEST_VOTE',
+                term: 12,
+                candidate_id: 'A',
+                direction: 'SEND',
+                event_time_ms: 12_000,
+            });
+            // Same logical event (same fields, same time) should be deduped.
+            FakeWebSocket.instances[0].simulateMessage({
+                type: 'rpc',
+                from_node: 'A',
+                to_node: 'D',
+                rpc_type: 'REQUEST_VOTE',
+                term: 12,
+                candidate_id: 'A',
+                direction: 'SEND',
+                event_time_ms: 12_000,
+            });
+        });
+        expect(result.current.messages).toHaveLength(1);
+
+        act(() => {
+            // Different event_time => distinct fallback identity.
+            FakeWebSocket.instances[0].simulateMessage({
+                type: 'rpc',
+                from_node: 'A',
+                to_node: 'D',
+                rpc_type: 'REQUEST_VOTE',
+                term: 12,
+                candidate_id: 'A',
+                direction: 'SEND',
+                event_time_ms: 12_050,
+            });
+        });
+        expect(result.current.messages).toHaveLength(2);
     });
 });
 

@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import { cn } from '@/lib/utils';
-import { Activity, Database, Flame, Gauge, Pause, Play, RotateCcw } from 'lucide-react';
+import { Activity, Database, Gauge, Pause, Play, RotateCcw } from 'lucide-react';
 import {
   CENTER,
   NETWORK_LATENCY_INVERT_BASE,
@@ -21,16 +21,14 @@ export interface ClusterStageProps {
 }
 
 export interface ClusterControlsProps {
-  chaosMode: boolean;
   isRunning: boolean;
   messageSpeed: number;
   reset: () => void;
-  setChaosMode: (enabled: boolean) => void;
   setIsRunning: (running: boolean) => void;
   setMessageSpeed: (speed: number) => void;
 }
 
-type ControlButtonVariant = 'running' | 'paused' | 'chaosOn' | 'chaosOff' | 'neutral';
+type ControlButtonVariant = 'running' | 'paused' | 'neutral';
 
 export const CANVAS_ROOT_CLASS = 'flex-1 flex flex-col items-center justify-center p-8 relative overflow-hidden';
 export const CANVAS_GRID_CLASS =
@@ -71,8 +69,6 @@ const CONTROLS_PANEL_CLASS = RAFT_SURFACE({
   padding: 'compact',
   radius: 'xxl',
 });
-const REPLAY_MODE_HINT_CLASS =
-  'text-[10px] font-mono uppercase tracking-widest text-slate-500';
 
 function controlButtonClass(variant: ControlButtonVariant): string {
   return RAFT_CONTROL_BUTTON({ tone: variant });
@@ -130,15 +126,12 @@ export function ClusterStage({ nodePositions, children }: ClusterStageProps) {
 }
 
 export function ClusterControls({
-  chaosMode,
   isRunning,
   messageSpeed,
   reset,
-  setChaosMode,
   setIsRunning,
   setMessageSpeed,
 }: ClusterControlsProps) {
-  const backendControlEnabled = false;
   const latencyPercent = Math.round(
     ((NETWORK_LATENCY_INVERT_BASE - messageSpeed) / NETWORK_LATENCY_SLIDER_MAX) * NETWORK_LATENCY_PERCENT_SCALE,
   );
@@ -148,7 +141,7 @@ export function ClusterControls({
       <div className={LATENCY_PANEL_CLASS}>
         <Gauge size={16} className="text-slate-400" />
         <label htmlFor={NETWORK_LATENCY_SLIDER_ID} className={LATENCY_LABEL_CLASS}>
-          NETWORK LATENCY
+          ANIMATION SPEED
         </label>
         <input
           id={NETWORK_LATENCY_SLIDER_ID}
@@ -158,22 +151,16 @@ export function ClusterControls({
           step={NETWORK_LATENCY_SLIDER_STEP}
           value={NETWORK_LATENCY_INVERT_BASE - messageSpeed}
           onChange={(e) => setMessageSpeed(NETWORK_LATENCY_INVERT_BASE - parseFloat(e.target.value))}
-          className={cn(LATENCY_SLIDER_CLASS, !backendControlEnabled && 'opacity-40 cursor-not-allowed')}
+          className={LATENCY_SLIDER_CLASS}
           aria-valuemin={NETWORK_LATENCY_SLIDER_MIN}
           aria-valuemax={NETWORK_LATENCY_SLIDER_MAX}
           aria-valuenow={NETWORK_LATENCY_INVERT_BASE - messageSpeed}
           aria-valuetext={`${latencyPercent}%`}
-          disabled={!backendControlEnabled}
         />
         <span className={LATENCY_PERCENT_CLASS}>
           {latencyPercent}%
         </span>
       </div>
-      {!backendControlEnabled && (
-        <div className={REPLAY_MODE_HINT_CLASS}>
-          Replay mode: backend controls are disabled.
-        </div>
-      )}
 
       <div className={CONTROLS_PANEL_CLASS}>
         <button
@@ -181,22 +168,10 @@ export function ClusterControls({
           onClick={() => setIsRunning(!isRunning)}
           className={controlButtonClass(isRunning ? 'running' : 'paused')}
           aria-pressed={isRunning}
-          title={isRunning ? 'Disconnect frontend stream' : 'Connect frontend stream'}
+          title={isRunning ? 'Disconnect live stream' : 'Connect live stream'}
         >
           {isRunning ? <Pause size={16} /> : <Play size={16} />}
-          {isRunning ? 'DISCONNECT FE' : 'CONNECT FE'}
-        </button>
-        <div className={CONTROL_PANEL_DIVIDER_CLASS}></div>
-        <button
-          type="button"
-          onClick={() => setChaosMode(!chaosMode)}
-          className={controlButtonClass(chaosMode ? 'chaosOn' : 'chaosOff')}
-          aria-pressed={chaosMode}
-          disabled={!backendControlEnabled}
-          title="Not available in replay mode"
-        >
-          <Flame size={16} className={chaosMode ? 'motion-safe:animate-pulse motion-reduce:animate-none' : ''} />
-          CHAOS N/A
+          {isRunning ? 'DISCONNECT' : 'CONNECT'}
         </button>
         <div className={CONTROL_PANEL_DIVIDER_CLASS}></div>
         <button
