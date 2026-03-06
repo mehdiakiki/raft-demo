@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"sort"
 	"sync"
 
 	"github.com/gorilla/websocket"
@@ -14,8 +15,9 @@ var upgrader = websocket.Upgrader{
 }
 
 type Hub struct {
-	mu      sync.RWMutex
-	clients map[*websocket.Conn]*client
+	mu          sync.RWMutex
+	clients     map[*websocket.Conn]*client
+	latestState map[string]json.RawMessage
 }
 
 type client struct {
@@ -25,7 +27,8 @@ type client struct {
 
 func NewHub() *Hub {
 	return &Hub{
-		clients: make(map[*websocket.Conn]*client),
+		clients:     make(map[*websocket.Conn]*client),
+		latestState: make(map[string]json.RawMessage),
 	}
 }
 
@@ -44,6 +47,18 @@ func (h *Hub) Broadcast(event any) {
 	}
 }
 
+func (h *Hub) CacheState(nodeID string, event any) {
+	data, err := json.Marshal(event)
+	if err != nil {
+		slog.Error("cache state marshal error", "node", nodeID, "err", err)
+		return
+	}
+
+	h.mu.Lock()
+	h.latestState[nodeID] = append(json.RawMessage(nil), data...)
+	h.mu.Unlock()
+}
+
 func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -56,6 +71,13 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request) {
 	h.mu.Lock()
 	h.clients[conn] = c
 	h.mu.Unlock()
+
+	if err := h.replayState(c); err != nil {
+		h.removeClient(conn)
+		conn.Close()
+		slog.Error("websocket replay failed", "remote", conn.RemoteAddr(), "err", err)
+		return
+	}
 
 	slog.Info("websocket client connected", "remote", conn.RemoteAddr())
 
@@ -87,6 +109,32 @@ func (h *Hub) removeClient(conn *websocket.Conn) {
 	h.mu.Lock()
 	delete(h.clients, conn)
 	h.mu.Unlock()
+}
+
+func (h *Hub) replayState(c *client) error {
+	for _, msg := range h.snapshotState() {
+		if err := c.writeRaw(msg); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (h *Hub) snapshotState() [][]byte {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	ids := make([]string, 0, len(h.latestState))
+	for nodeID := range h.latestState {
+		ids = append(ids, nodeID)
+	}
+	sort.Strings(ids)
+
+	state := make([][]byte, 0, len(ids))
+	for _, nodeID := range ids {
+		state = append(state, append([]byte(nil), h.latestState[nodeID]...))
+	}
+	return state
 }
 
 func (c *client) writeRaw(data []byte) error {
